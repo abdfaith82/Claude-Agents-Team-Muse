@@ -1,0 +1,80 @@
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+}
+
+android {
+    namespace = "com.relay.agents"
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = "com.claudeagents.team.muse"
+        minSdk = 26
+        targetSdk = 34
+        versionCode = 1
+        versionName = "1.0"
+        // GeckoView ثقيل: نكتفي بمعمارية arm64 (هواتف اليوم) لتصغير الحجم.
+        ndk { abiFilters += "arm64-v8a" }
+    }
+
+    // مفتاح توقيع ثابت للنسخ التجريبية: كل بناء على GitHub Actions يوقَّع بنفس المفتاح،
+    // فيُثبَّت التحديث فوق النسخة القديمة وتبقى بيانات التطبيق (الوكلاء والمشاريع).
+    // (مفتاح debug عام وللاستخدام الشخصي فقط؛ لا تنشر التطبيق به.)
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+    buildFeatures {
+        compose = true
+    }
+    composeOptions {
+        kotlinCompilerExtensionVersion = "1.5.8"
+    }
+    packaging {
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+}
+
+dependencies {
+    implementation(platform("androidx.compose:compose-bom:2024.02.00"))
+    implementation("androidx.core:core-ktx:1.12.0")
+    implementation("androidx.activity:activity-compose:1.8.2")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.foundation:foundation")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-core")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
+    // Credential Manager (تسجيل الدخول بحساب Google داخل التطبيق)
+    implementation("androidx.credentials:credentials:1.2.2")
+    implementation("androidx.credentials:credentials-play-services-auth:1.2.2")
+    implementation("com.google.android.libraries.identity.googleid:googleid:1.1.0")
+
+    // محرك فايرفوكس لتبويبات المتصفح المعزولة
+    implementation("org.mozilla.geckoview:geckoview:130.0.20240829075237")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20231013")
+}
