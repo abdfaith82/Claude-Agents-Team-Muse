@@ -192,7 +192,9 @@ class RelayVpnService : VpnService() {
         val n = Notification.Builder(this, CH)
             .setContentTitle("Claude Agents Team Muse — VPN")
             .setContentText("متصل: ${server.name}")
-            .setSmallIcon(android.R.drawable.stat_sys_vpns)
+            // ملاحظة: stat_sys_vpns أيقونة نظام خاصة غير عامة (Unresolved reference
+            // في البناء) — نستخدم أيقونة قفل عامة من android.R بدلها.
+            .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setOngoing(true)
             .build()
         // VpnService نفسها خدمة نظام؛ لا نطلب نوع foreground إضافياً هنا.
