@@ -184,7 +184,7 @@ fun Muse4AiTab() {
                     if (id.isNotBlank()) Text(id, style = MaterialTheme.typography.labelSmall)
                     if (text.isNotBlank()) Text(text, style = MaterialTheme.typography.bodySmall)
                     downloads.forEachIndexed { i, url ->
-                        TextButton(onClick = { openLink(ctx, url) }) { Text(tr("⬇️ تنزيل النتيجة ${i + 1}")) }
+                        TextButton(onClick = { openLink(ctx, url) }) { Text(trf("⬇️ تنزيل النتيجة %s", i + 1)) }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(enabled = id.isNotBlank() && !busy, onClick = {

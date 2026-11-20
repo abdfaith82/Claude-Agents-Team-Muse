@@ -178,7 +178,7 @@ fun TestStationTab(vm: RelayViewModel, onNavigate: (Int) -> Unit = {}) {
                 out += SelfTest(
                     tr("الشبكة"), tr("الوصول إلى الإنترنت"),
                     if (code == 204) SelfTestStatus.PASS else SelfTestStatus.FAIL,
-                    if (code == 204) tr("الإنترنت يعمل (204)") else tr("تعذّر الوصول (رمز: ${code ?: "—"})")
+                    if (code == 204) tr("الإنترنت يعمل (204)") else trf("تعذّر الوصول (رمز: %s)", code ?: "—")
                 )
             }
             // 5) النماذج المحلية: هل يرد الخادم المحلي فعلاً؟
@@ -237,7 +237,7 @@ fun TestStationTab(vm: RelayViewModel, onNavigate: (Int) -> Unit = {}) {
                     val bad = results.count { it.status == SelfTestStatus.FAIL }
                     val warn = results.count { it.status == SelfTestStatus.WARN }
                     Text(
-                        tr("ناجح: $ok • فاشل: $bad • تحذير: $warn") +
+                        trf("ناجح: %s • فاشل: %s • تحذير: %s", ok, bad, warn) +
                             if (lastRun.isNotEmpty()) " • $lastRun" else "",
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.padding(top = 12.dp)
