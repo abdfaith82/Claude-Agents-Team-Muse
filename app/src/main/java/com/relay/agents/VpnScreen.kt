@@ -137,13 +137,13 @@ fun VpnTab(vm: RelayViewModel) {
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
-                Switch(checked = vm.vpnKillSwitch, onCheckedChange = { vm.setVpnKillSwitch(it) })
+                Switch(checked = vm.vpnKillSwitch, onCheckedChange = { vm.updateVpnKillSwitch(it) })
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = {
                     ctx.startActivity(Intent(Settings.ACTION_VPN_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 }) { Text(tr("إعدادات VPN في النظام")) }
-                OutlinedButton(onClick = { vm.setVpnAutoReconnect(!vm.vpnAutoReconnect) }) {
+                OutlinedButton(onClick = { vm.updateVpnAutoReconnect(!vm.vpnAutoReconnect) }) {
                     Text(if (vm.vpnAutoReconnect) tr("إعادة اتصال تلقائية: مفعّلة") else tr("إعادة اتصال تلقائية: متوقفة"))
                 }
             }

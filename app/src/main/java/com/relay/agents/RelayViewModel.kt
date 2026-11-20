@@ -199,8 +199,11 @@ class RelayViewModel(app: Application) : AndroidViewModel(app) {
         vpnStore.select(id)
     }
 
-    fun setVpnKillSwitch(on: Boolean) { vpnKillSwitch = on; vpnStore.setKillSwitch(on) }
-    fun setVpnAutoReconnect(on: Boolean) { vpnAutoReconnect = on; vpnStore.setAutoReconnect(on) }
+    // ملاحظة: لا تسمِّ هاتين الدالتين setVpnKillSwitch/setVpnAutoReconnect —
+    // خاصية var بنفس الاسم تولّد setter JVM بنفس التوقيع فيتعارض مع الدالة
+    // (Platform declaration clash) ويفشل البناء.
+    fun updateVpnKillSwitch(on: Boolean) { vpnKillSwitch = on; vpnStore.setKillSwitch(on) }
+    fun updateVpnAutoReconnect(on: Boolean) { vpnAutoReconnect = on; vpnStore.setAutoReconnect(on) }
 
     fun startVpn(ctx: android.content.Context) {
         RelayVpnService.start(ctx)
