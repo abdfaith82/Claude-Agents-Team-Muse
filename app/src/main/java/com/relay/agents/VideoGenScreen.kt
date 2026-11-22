@@ -118,7 +118,7 @@ fun VideoGenTab(vm: RelayViewModel) {
                             val target = File(ctx.cacheDir, "videogen-${s.index}-${System.currentTimeMillis()}.mp4")
                             VideoGenClient.downloadResult(s.jobId, cfg.apiKey, target)
                                 .onSuccess { updateScene(i) { it.copy(status = SceneStatus.READY, videoFile = target) } }
-                                .onFailure { updateScene(i) { it.copy(status = SceneStatus.FAILED, error = it.message?.take(160) ?: "") } }
+                                .onFailure { err -> updateScene(i) { it.copy(status = SceneStatus.FAILED, error = err.message?.take(160) ?: "") } }
                         }
                         "failed", "cancelled" -> updateScene(i) { it.copy(status = SceneStatus.FAILED, error = st) }
                         else -> Unit

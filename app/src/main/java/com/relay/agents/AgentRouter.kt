@@ -184,7 +184,7 @@ class AgentRouter(
             Provider.OPENROUTER -> 3_000L
             Provider.GROQ, Provider.MISTRAL, Provider.CEREBRAS, Provider.HUGGINGFACE,
             Provider.NVIDIA, Provider.COHERE, Provider.ZAI, Provider.SAMBANOVA -> 2_000L
-            Provider.CLAUDE, Provider.WEB, Provider.CUSTOM, Provider.OPENAI, Provider.MUSE, Provider.OLLAMA, Provider.LMSTUDIO -> 0L
+            Provider.CLAUDE, Provider.WEB, Provider.CUSTOM, Provider.OPENAI, Provider.MUSE, Provider.OLLAMA, Provider.LMSTUDIO, Provider.POLLINATIONS -> 0L
         }
     }
 }
