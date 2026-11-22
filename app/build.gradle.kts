@@ -72,8 +72,8 @@ dependencies {
     implementation("androidx.credentials:credentials-play-services-auth:1.2.2")
     implementation("com.google.android.libraries.identity.googleid:googleid:1.1.0")
 
-    // محرك فايرفوكس لتبويبات المتصفح المعزولة (GeckoView 140 — الأحدث المتوافق مع compileSdk 34؛ 160 يحتاج 37)
-    implementation("org.mozilla.geckoview:geckoview:140.0.20250630155423")
+    // محرك فايرفوكس لتبويبات المتصفح المعزولة (GeckoView 137 — الأحدث المتوافق مع مترجم Kotlin ‏1.9.22؛ ‏138+ يجلب kotlin-stdlib ‏2.1)
+    implementation("org.mozilla.geckoview:geckoview:137.0.20250414091429")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20231013")

@@ -58,10 +58,12 @@ private data class FreeSite(val id: String, val name: String, val url: String, v
  * الحدود المجانية (عدد الرسائل اليومي) تتغير مع الوقت حسب كل شركة.
  *
  * إصلاح إصدار المتصفح: GeckoView حُدّث من 130 (آب 2024) إلى
- * 140.0.20250630155423 (حزيران 2025)، فزال تحذير "This browser is out of date" في
+ * 137.0.20250414091429 (نيسان 2025)، فزال تحذير "This browser is out of date" في
  * المواقع التي ترفض المتصفحات القديمة. (جرّبنا أولاً الأحدث 160 ففشل
- * البناء: يحتاج compileSdk 37 وAGP 9.1، والتطبيق على 34 وAGP 8.2.2؛
- * أما 140 فبياناته minCompileSdk=1 وتبعياته من حزيران 2025 متوافقة مع 34.)
+ * البناء: يحتاج compileSdk 37 وAGP 9.1؛ ثم 140 ففشل: يجلب kotlin-stdlib
+ * 2.1.21 ومترجم Kotlin ‏1.9.22 لا يقرأ بياناتها؛ أما 137 فتبعياته
+ * kotlin-stdlib ‏1.9.24 وandroidx.core ‏1.15.0 وlifecycle ‏2.8.7 —
+ * كلها متوافقة مع الأدوات الحالية.)
  */
 @Composable
 fun FreeAiTab() {
