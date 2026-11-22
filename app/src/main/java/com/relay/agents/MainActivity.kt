@@ -175,6 +175,7 @@ private fun titleFor(dest: Int, current: Project?): String = when (dest) {
     19 -> tr("محطة الاختبار")
     20 -> tr("Muse4AI")
     21 -> tr("توليد الفيديو")
+    22 -> tr("المتصفح المجاني")
     6 -> tr("الرفع إلى GitHub")
     7 -> tr("المحاكي والسحابة")
     else -> tr("الملفات")
@@ -292,7 +293,7 @@ fun DrawerContent(
     val pinned = filtered.filter { it.pinned }
     val recent = filtered.filter { !it.pinned }.take(15)
     val nav = listOf(
-        Triple(8, "المحادثة", "💬"), Triple(1, "التشغيل", "▶️"), Triple(15, "سير العمل", "🧭"), Triple(17, "النماذج", "✨"), Triple(18, "VPN", "🛡️"), Triple(19, "محطة الاختبار", "🧪"), Triple(20, "Muse4AI", "🎬"), Triple(21, "توليد الفيديو", "🎬"), Triple(0, "الوكلاء", "🤖"), Triple(2, "المشاريع", "🗂️"),
+        Triple(8, "المحادثة", "💬"), Triple(1, "التشغيل", "▶️"), Triple(15, "سير العمل", "🧭"), Triple(17, "النماذج", "✨"), Triple(18, "VPN", "🛡️"), Triple(19, "محطة الاختبار", "🧪"), Triple(20, "Muse4AI", "🎬"), Triple(21, "توليد الفيديو", "🎬"), Triple(22, "المتصفح المجاني", "🌐"), Triple(0, "الوكلاء", "🤖"), Triple(2, "المشاريع", "🗂️"),
         Triple(4, "الكود", "💻"), Triple(5, "الملفات", "📄")
     )
     val cloudNav = listOf(Triple(14, "التوجيه والتحليلات", "📊"), Triple(13, "البوابة المحلية", "🌐"), Triple(12, "الموصلات", "🔌"), Triple(6, "الرفع إلى GitHub", "☁️"), Triple(16, "متصفح GitHub", "🌍"), Triple(7, "المحاكي والسحابة", "📱"))
@@ -483,6 +484,7 @@ fun RelayScreen(vm: RelayViewModel) {
                     19 -> TestStationTab(vm) { go(it) }
                     20 -> Muse4AiTab()
                     21 -> VideoGenTab(vm)
+                    22 -> FreeAiTab { go(16) }
                     6 -> GitHubTab(vm, gh)
                     7 -> EmulatorTab(vm, gh)
                     else -> SettingsTab()
@@ -621,7 +623,15 @@ fun AgentsTab(vm: RelayViewModel, onLogin: (String) -> Unit) {
                     listOf(
                         "Claude" to "https://claude.ai",
                         "ChatGPT" to "https://chatgpt.com",
-                        "Gemini" to "https://gemini.google.com"
+                        "Gemini" to "https://gemini.google.com",
+                        "DeepSeek" to "https://chat.deepseek.com",
+                        "Qwen" to "https://chat.qwen.ai",
+                        "Copilot" to "https://copilot.microsoft.com",
+                        "Perplexity" to "https://perplexity.ai",
+                        "Meta AI" to "https://meta.ai",
+                        "Mistral" to "https://chat.mistral.ai",
+                        "Grok" to "https://grok.com",
+                        "Muse" to "https://muse.ai"
                     ).forEach { (n, u) ->
                         AssistChip(onClick = { model = u; if (name.isBlank()) name = trf("%s (ويب)", n) }, label = { Text(n) })
                     }

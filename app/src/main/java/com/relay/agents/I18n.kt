@@ -637,5 +637,18 @@ object Translations {
         "🔴 خطأ" to "🔴 Error",
         "🟡 جارٍ الاتصال…" to "🟡 Connecting…",
         "🟢 متصل" to "🟢 Connected",
+        "المتصفح المجاني" to "Free browser",
+        "كل زر يفتح ذكاءً اصطناعياً في تبويب مستقل ببيئة تسجيل دخول منفصلة — سجّل دخولك بنفسك في كل موقع واكتب بنفسك. التطبيق لا يرسل شيئاً تلقائياً ولا يقرأ إجاباتك، والحدود المجانية تتغير مع الوقت." to "Each button opens an AI in its own tab with a separate login environment — sign in yourself on each site and type yourself. The app sends nothing automatically and never reads your answers, and free limits change over time.",
+        "كتابة وبرمجة وملفات طويلة — مجاني بحد يومي، ثم يتوقف حتى يتجدد." to "Writing, coding and long documents — free with a daily limit, then it stops until it renews.",
+        "الأشهر والأوسع استخداماً — مجاني بحد للرسائل، مع بحث وتوليد صور." to "The most popular and widely used — free with a message limit, with search and image generation.",
+        "من جوجل — مجاني، بحث وملفات طويلة، ويتكامل مع حساب جوجل." to "From Google — free, search and long documents, integrated with your Google account.",
+        "الأقوى مجاناً للبرمجة والتفكير العميق — دردشة مجانية بلا خطة مدفوعة وبلا حد معلن." to "The strongest free option for coding and deep reasoning — free chat with no paid plan and no stated limit.",
+        "من علي بابا — مجاني بلا حد معلن، يكتب ويبرمج ويولّد صوراً وفيديو." to "From Alibaba — free with no stated limit; writes, codes and generates images and video.",
+        "من مايكروسوفت — مجاني، بحث ويب لحظي، ويعمل بحساب مايكروسوفت." to "From Microsoft — free, live web search, works with a Microsoft account.",
+        "بحث بإجابات موثقة بالمصادر — مجاني، مع 5 أسئلة Pro يومياً." to "Research with answers cited from sources — free, with 5 Pro questions per day.",
+        "من ميتا — مجاني بلا خطة مدفوعة، ويعمل بحساب ميتا." to "From Meta — free with no paid plan, works with a Meta account.",
+        "أوروبي (Le Chat) — مجاني بحد يومي، وبياناته في أوروبا." to "European (Le Chat) — free with a daily limit, and its data stays in Europe.",
+        "من xAI — أخبار لحظية من منصة X، مجاني بحد محدود." to "From xAI — live news from X, free with a limited allowance.",
+        "حسابك مسجل فيه — مجاني، لكن توفره حسب بلدك وقد يطلب انتظاراً." to "Your account is registered there — free, but availability depends on your country and it may ask you to wait.",
     )
 }
