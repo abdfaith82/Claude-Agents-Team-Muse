@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.relay.agents"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.claudeagents.team.muse"
