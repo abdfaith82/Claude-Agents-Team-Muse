@@ -6,6 +6,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 
 sealed class ApiResult {
     data class Ok(val text: String, val ms: Long = 0) : ApiResult()
@@ -48,6 +49,9 @@ object ClaudeClient {
         images: List<ImageData>
     ): ApiResult = withContext(Dispatchers.IO) {
         val t0 = System.currentTimeMillis()
+        if (agent.provider == Provider.POLLINATIONS) {
+            return@withContext sendPollinations(agent, system, user, maxTokens, t0)
+        }
         try {
             val (url, headers, body) = build(agent, system, user, maxTokens, images)
             val conn = (URL(url).openConnection() as HttpURLConnection).apply {
@@ -78,6 +82,31 @@ object ClaudeClient {
         }
     }
 
+    /** Pollinations بلا مفتاح: واجهة النص البسيطة GET — النظام في ?system والمهمة في المسار، وبذرة عشوائية لتفادي الردّ المخزّن. */
+    private fun sendPollinations(agent: AgentConfig, system: String, user: String, maxTokens: Int, t0: Long): ApiResult {
+        return try {
+            val prompt = URLEncoder.encode(user, "UTF-8").replace("+", "%20")
+            val sys = URLEncoder.encode(system, "UTF-8").replace("+", "%20")
+            val url = "https://gen.pollinations.ai/text/$prompt?model=${modelId(agent)}&system=$sys&seed=-1&max_tokens=$maxTokens"
+            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 20_000
+                readTimeout = 180_000
+            }
+            val code = conn.responseCode
+            val raw = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                ?.bufferedReader()?.use { it.readText() } ?: ""
+            if (code in 200..299) {
+                val text = raw.trim()
+                if (text.isBlank()) ApiResult.Fail(0, "Empty reply", fatal = false)
+                else ApiResult.Ok(text, System.currentTimeMillis() - t0)
+            } else {
+                ApiResult.Fail(code, errorMessage(raw).take(200), fatal = false)
+            }
+        } catch (e: Exception) {
+            ApiResult.Fail(0, e.message ?: e.javaClass.simpleName, fatal = false)
+        }
+    }
+
     /** اسم النموذج بصيغة صالحة: بلا مسافات وبلا بادئة models/ (سبب خطأ 400 في Gemini). */
     fun modelId(a: AgentConfig): String = a.model.trim().removePrefix("models/")
 
@@ -85,6 +114,20 @@ object ClaudeClient {
     suspend fun listModels(provider: Provider, apiKey: String, baseUrl: String = ""): Result<List<String>> =
         withContext(Dispatchers.IO) {
             runCatching {
+                if (provider == Provider.POLLINATIONS) {
+                    val conn = (URL("https://text.pollinations.ai/models").openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 20_000
+                        readTimeout = 30_000
+                    }
+                    val code = conn.responseCode
+                    val raw = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                        ?.bufferedReader()?.use { it.readText() } ?: ""
+                    if (code !in 200..299) error("$code: ${errorMessage(raw)}")
+                    val arr = JSONArray(raw)
+                    return@runCatching (0 until arr.length())
+                        .map { i -> arr.getJSONObject(i).getString("name") }
+                        .sorted()
+                }
                 val (url, headers) = when (provider) {
                     Provider.CLAUDE -> "https://api.anthropic.com/v1/models?limit=100" to
                         mapOf("x-api-key" to apiKey, "anthropic-version" to "2023-06-01")
@@ -121,6 +164,29 @@ object ClaudeClient {
                 }
                 val filtered = if (provider == Provider.OPENROUTER) names.filter { n -> n.endsWith(":free") } else names
                 filtered.sorted()
+            }
+        }
+
+    /** يجلب قائمة النماذج المجانية الحالية من الإنترنت بلا مفتاح (القائمة العامة لـ OpenRouter). */
+    suspend fun listFreeModels(): Result<List<String>> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val conn = (URL("https://openrouter.ai/api/v1/models").openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 20_000
+                    readTimeout = 30_000
+                }
+                val code = conn.responseCode
+                val raw = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                    ?.bufferedReader()?.use { it.readText() } ?: ""
+                if (code !in 200..299) error("$code: ${errorMessage(raw)}")
+                val arr = JSONObject(raw).optJSONArray("data") ?: JSONArray()
+                (0 until arr.length()).map { i -> arr.getJSONObject(i) }
+                    .filter { m ->
+                        val p = m.optJSONObject("pricing")
+                        p != null && p.optString("prompt") == "0" && p.optString("completion") == "0"
+                    }
+                    .map { it.getString("id") }
+                    .sorted()
             }
         }
 

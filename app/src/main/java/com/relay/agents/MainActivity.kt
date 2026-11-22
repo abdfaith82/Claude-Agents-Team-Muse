@@ -174,6 +174,7 @@ private fun titleFor(dest: Int, current: Project?): String = when (dest) {
     18 -> tr("VPN")
     19 -> tr("محطة الاختبار")
     20 -> tr("Muse4AI")
+    21 -> tr("توليد الفيديو")
     6 -> tr("الرفع إلى GitHub")
     7 -> tr("المحاكي والسحابة")
     else -> tr("الملفات")
@@ -291,7 +292,7 @@ fun DrawerContent(
     val pinned = filtered.filter { it.pinned }
     val recent = filtered.filter { !it.pinned }.take(15)
     val nav = listOf(
-        Triple(8, "المحادثة", "💬"), Triple(1, "التشغيل", "▶️"), Triple(15, "سير العمل", "🧭"), Triple(17, "النماذج", "✨"), Triple(18, "VPN", "🛡️"), Triple(19, "محطة الاختبار", "🧪"), Triple(20, "Muse4AI", "🎬"), Triple(0, "الوكلاء", "🤖"), Triple(2, "المشاريع", "🗂️"),
+        Triple(8, "المحادثة", "💬"), Triple(1, "التشغيل", "▶️"), Triple(15, "سير العمل", "🧭"), Triple(17, "النماذج", "✨"), Triple(18, "VPN", "🛡️"), Triple(19, "محطة الاختبار", "🧪"), Triple(20, "Muse4AI", "🎬"), Triple(21, "توليد الفيديو", "🎬"), Triple(0, "الوكلاء", "🤖"), Triple(2, "المشاريع", "🗂️"),
         Triple(4, "الكود", "💻"), Triple(5, "الملفات", "📄")
     )
     val cloudNav = listOf(Triple(14, "التوجيه والتحليلات", "📊"), Triple(13, "البوابة المحلية", "🌐"), Triple(12, "الموصلات", "🔌"), Triple(6, "الرفع إلى GitHub", "☁️"), Triple(16, "متصفح GitHub", "🌍"), Triple(7, "المحاكي والسحابة", "📱"))
@@ -481,6 +482,7 @@ fun RelayScreen(vm: RelayViewModel) {
                     18 -> VpnTab(vm)
                     19 -> TestStationTab(vm) { go(it) }
                     20 -> Muse4AiTab()
+                    21 -> VideoGenTab(vm)
                     6 -> GitHubTab(vm, gh)
                     7 -> EmulatorTab(vm, gh)
                     else -> SettingsTab()
@@ -501,6 +503,7 @@ fun AgentsTab(vm: RelayViewModel, onLogin: (String) -> Unit) {
     var model by remember { mutableStateOf(Provider.GEMINI.defaultModel) }
     var baseUrl by remember { mutableStateOf("") }
     var found by remember { mutableStateOf<List<String>>(emptyList()) }
+    var foundFree by remember { mutableStateOf(false) }
     var msg by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
@@ -570,6 +573,7 @@ fun AgentsTab(vm: RelayViewModel, onLogin: (String) -> Unit) {
             }
             Text(
                 if (provider.manual) tr("وكيل يدوي: عند حاجة الفريق إليه يفتح موقع الدردشة داخل التطبيق، تسجّل دخولك بنفسك، تلصق المهمة وترسلها، ثم تلصق الرد. يُستخدم كاحتياطي أخير.")
+                else if (provider.noKey) tr("مجاني تماماً بلا مفتاح وبلا حساب: النماذج تعمل مباشرة، وقد تكون أبطأ أو محدودة أحياناً.")
                 else trf("مفتاح %s من: %s", provider.label, provider.keyUrl),
                 style = MaterialTheme.typography.bodySmall
             )
@@ -628,7 +632,7 @@ fun AgentsTab(vm: RelayViewModel, onLogin: (String) -> Unit) {
                 OutlinedTextField(baseUrl, { baseUrl = it }, label = { Text(tr("عنوان الخادم (مثل http://192.168.1.5:11434/v1)")) },
                     modifier = Modifier.fillMaxWidth(), singleLine = true)
             }
-            if (!provider.manual) {
+            if (!provider.manual && !provider.noKey) {
                 OutlinedTextField(key, { key = it }, label = { Text(if (provider.custom) tr("مفتاح API (اختياري)") else tr("مفتاح API")) },
                     modifier = Modifier.fillMaxWidth(), singleLine = true, visualTransformation = PasswordVisualTransformation())
             }
@@ -639,19 +643,35 @@ fun AgentsTab(vm: RelayViewModel, onLogin: (String) -> Unit) {
                     onClick = {
                         scope.launch {
                             msg = tr("جارٍ الجلب…")
+                            foundFree = false
                             ClaudeClient.listModels(provider, key.trim(), baseUrl)
                                 .onSuccess { found = it; msg = trf("%s نموذجاً متاحاً لمفتاحك، اضغط لاختيار واحد", it.size) }
                                 .onFailure { found = emptyList(); msg = trf("تعذّر الجلب: %s", it.message?.take(140)) }
                         }
                     },
-                    enabled = key.isNotBlank() || (provider.custom && baseUrl.isNotBlank()),
+                    enabled = key.isNotBlank() || provider.noKey || (provider.custom && baseUrl.isNotBlank()),
                     modifier = Modifier.fillMaxWidth()
                 ) { Text(tr("جلب النماذج المتاحة لمفتاحي")) }
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            msg = tr("جارٍ الجلب…")
+                            ClaudeClient.listFreeModels()
+                                .onSuccess { found = it; foundFree = true; msg = trf("%s نموذجاً مجانياً، اضغط لاختيار واحد", it.size) }
+                                .onFailure { found = emptyList(); foundFree = false; msg = trf("تعذّر الجلب: %s", it.message?.take(140)) }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text(tr("جلب النماذج المجانية (بدون مفتاح)")) }
+                Text(tr("القائمة تُجلب بلا مفتاح، واستخدام النموذج يحتاج مفتاح OpenRouter مجاني."),
+                    style = MaterialTheme.typography.bodySmall)
                 if (msg.isNotEmpty()) Text(msg, style = MaterialTheme.typography.bodySmall)
                 if (found.isNotEmpty()) {
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         found.take(60).forEach { m ->
-                            FilterChip(selected = model == m, onClick = { model = m }, label = { Text(m) })
+                            FilterChip(selected = model == m, onClick = {
+                                if (foundFree) { provider = Provider.OPENROUTER; model = m } else model = m
+                            }, label = { Text(m) })
                         }
                     }
                 }
@@ -681,6 +701,7 @@ fun AgentsTab(vm: RelayViewModel, onLogin: (String) -> Unit) {
                         Text(a.name, style = MaterialTheme.typography.titleSmall)
                         Text(
                             if (a.provider.manual) "${a.provider.label} • ${a.model}"
+                            else if (a.provider.noKey) "${a.provider.label} • ${a.model} • ${tr("بلا مفتاح")}"
                             else "${a.provider.label} • ${a.model} • ••••${a.apiKey.takeLast(4)}",
                             style = MaterialTheme.typography.bodySmall
                         )

@@ -448,7 +448,7 @@ class RelayViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun addAgent(name: String, key: String, model: String, provider: Provider, baseUrl: String = "") {
-        if (name.isBlank() || (key.isBlank() && !provider.manual && !provider.custom)) return
+        if (name.isBlank() || (key.isBlank() && !provider.manual && !provider.custom && !provider.noKey)) return
         if (provider.custom && (baseUrl.isBlank() || model.isBlank())) return
         agents = agents + AgentConfig(
             UUID.randomUUID().toString(), name.trim(), key.trim(),

@@ -102,7 +102,7 @@ fun TestStationTab(vm: RelayViewModel, onNavigate: (Int) -> Unit = {}) {
                 )
             } else {
                 enabled.forEach { a ->
-                    val missingKey = !a.provider.manual && !a.provider.custom &&
+                    val missingKey = !a.provider.manual && !a.provider.custom && !a.provider.noKey &&
                         a.provider != Provider.OLLAMA && a.provider != Provider.LMSTUDIO &&
                         a.apiKey.isBlank()
                     val missingBase = a.provider.custom && a.baseUrl.isBlank()

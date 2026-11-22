@@ -3,7 +3,7 @@ package com.relay.agents
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** مزوّد الذكاء الاصطناعي: Claude بمفتاح مدفوع، والبقية لها طبقات مجانية بمفتاح من موقع المزوّد. */
+/** مزوّد الذكاء الاصطناعي: Claude بمفتاح مدفوع، والبقية لها طبقات مجانية بمفتاح من موقع المزوّد — عدا Pollinations بلا مفتاح إطلاقاً. */
 enum class Provider(
     val label: String,
     val defaultModel: String,
@@ -13,7 +13,9 @@ enum class Provider(
     /** manual = Web agent (manual): يفتح موقع الدردشة داخل التطبيق ويلصق المستخدم الرد بنفسه (حقل model يحمل رابط الموقع). */
     val manual: Boolean = false,
     /** custom = نقطة نهاية متوافقة مع OpenAI يحدّدها المستخدم (Ollama وLM Studio وllama.cpp وvLLM وغيرها). */
-    val custom: Boolean = false
+    val custom: Boolean = false,
+    /** noKey = يعمل بلا مفتاح API إطلاقاً (مثل Pollinations عبر واجهة النص العامة). */
+    val noKey: Boolean = false
 ) {
     CLAUDE("Claude", "claude-sonnet-4-5", "console.anthropic.com", false),
     /** ChatGPT عبر واجهة OpenAI الرسمية — يحتاج مفتاحاً مدفوعاً من platform.openai.com. */
@@ -36,6 +38,9 @@ enum class Provider(
         "https://api.groq.com/openai/v1/chat/completions"),
     OPENROUTER("OpenRouter (free)", "meta-llama/llama-3.3-70b-instruct:free", "openrouter.ai/keys", true,
         "https://openrouter.ai/api/v1/chat/completions"),
+    /** Pollinations: نماذج مجانية تماماً بلا مفتاح وبلا حساب عبر واجهة النص العامة (GET). النموذج المتاح للمجهولين حالياً openai-fast (GPT-OSS 20B) فقط. واجهة chat/completions الرسمية تحتاج مفتاحاً، لذلك يستخدم التطبيق واجهة النص البسيطة. */
+    POLLINATIONS("Pollinations (مجاني تماماً)", "openai-fast", "بلا مفتاح", true,
+        "https://gen.pollinations.ai/text", noKey = true),
     MISTRAL("Mistral (free)", "mistral-small-latest", "console.mistral.ai/api-keys", true,
         "https://api.mistral.ai/v1/chat/completions"),
     CEREBRAS("Cerebras (free)", "llama-3.3-70b", "cloud.cerebras.ai", true,
@@ -53,8 +58,8 @@ enum class Provider(
     CUSTOM("Custom (OpenAI-compatible)", "", "", true, custom = true),
     WEB("Web agent (manual)", "https://claude.ai", "", true, manual = true);
 
-    /** كل المزوّدين عدا Claude وGemini والويب يتكلمون بصيغة OpenAI chat/completions. */
-    val openAiCompat: Boolean get() = this != CLAUDE && this != GEMINI && this != WEB
+    /** كل المزوّدين عدا Claude وGemini والويب وPollinations يتكلمون بصيغة OpenAI chat/completions. */
+    val openAiCompat: Boolean get() = this != CLAUDE && this != GEMINI && this != WEB && this != POLLINATIONS
 
     /** يقبل الصور في الطلب (Claude وGemini). البقية تستلم وصفاً نصياً للصور يولّده وكيل رؤية. */
     val vision: Boolean get() = this == CLAUDE || this == GEMINI
