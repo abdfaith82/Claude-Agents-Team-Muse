@@ -304,13 +304,16 @@ Claude وChatGPT وGemini وDeepSeek وQwen وCopilot وPerplexity وMeta AI
 Pro يومياً؛ باقي المواقع مجانية بحد يومي/حد للرسائل يتغير مع الوقت،
 وبياناتك فيها قد تُستخدم للتدريب حسب إعدادات كل موقع.
 
-## 10) إصلاح إصدار المتصفح — GeckoView 160 (جديد)
+## 10) إصلاح إصدار المتصفح — GeckoView 140 (جديد)
 
 كان المتصفح مبنياً على GeckoView ‏130.0.20240829075237 (آب 2024)،
 فظهر في المواقع — ومنها Claude — تحذير "This browser is out of date".
-حُدّثت المكتبة في `app/build.gradle.kts` إلى أحدث إصدار منشور على
-Maven Central وقت التعديل: ‏160.0.20261116130455 (تحقّق حيّ من
-maven-metadata.xml في 2026-11-22). واجهة GeckoView المستخدمة في
-التطبيق (GeckoSession وGeckoRuntime وcontextId وWebExtension)
-مستقرة عبر هذه الإصدارات، والبناء على GitHub Actions هو الذي يثبت
-أن الترقية تجمّعت بنجاح.
+جرّبنا أولاً الأحدث ‏160.0.20261116130455 ففشل البناء (التشغيل 9) في
+`checkDebugAarMetadata`: ‏160 يحتاج compileSdk 37 وAGP 9.1 مع مكتبات
+androidx حديثة (core-ktx ‏1.19.1 وlifecycle ‏2.11.0)، والتطبيق مبني
+على compileSdk ‏34 وAGP ‏8.2.2. فثبّتنا بدلاً منه ‏140.0.20250630155423
+(حزيران 2025): تحقّقنا من ملف AAR نفسه فبياناته minCompileSdk=1،
+وتبعياته من حزيران 2025 (androidx.core ‏1.16.0 وlifecycle ‏2.9.0)
+متوافقة مع compileSdk ‏34، وليس فيها تبعية Compose. الترقية الكاملة
+إلى 160 تتطلب رفع compileSdk إلى 37 وAGP إلى 9.1 مع Gradle ‏9
+وKotlin ‏2.x — عمل أكبر يُترك لوقت آخر إن لزم.

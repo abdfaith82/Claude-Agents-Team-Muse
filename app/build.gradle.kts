@@ -72,8 +72,8 @@ dependencies {
     implementation("androidx.credentials:credentials-play-services-auth:1.2.2")
     implementation("com.google.android.libraries.identity.googleid:googleid:1.1.0")
 
-    // محرك فايرفوكس لتبويبات المتصفح المعزولة (GeckoView 160 — الأحدث؛ 130 كان يظهر تحذير "browser is out of date")
-    implementation("org.mozilla.geckoview:geckoview:160.0.20261116130455")
+    // محرك فايرفوكس لتبويبات المتصفح المعزولة (GeckoView 140 — الأحدث المتوافق مع compileSdk 34؛ 160 يحتاج 37)
+    implementation("org.mozilla.geckoview:geckoview:140.0.20250630155423")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20231013")
