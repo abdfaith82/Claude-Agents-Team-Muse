@@ -484,7 +484,7 @@ fun RelayScreen(vm: RelayViewModel) {
                     19 -> TestStationTab(vm) { go(it) }
                     20 -> Muse4AiTab()
                     21 -> VideoGenTab(vm)
-                    22 -> FreeAiTab { go(16) }
+                    22 -> FreeAiTab()
                     6 -> GitHubTab(vm, gh)
                     7 -> EmulatorTab(vm, gh)
                     else -> SettingsTab()

@@ -50,8 +50,10 @@ private const val TAG = "GeckoBrowser"
 private const val BRIDGE_URI = "resource://android/assets/bridge/"
 private const val BRIDGE_ID = "bridge@claudeagents.team.muse"
 
-/** تبويب واحد: جلسة Gecko خاصة به، وبيئة تخزين (ctxId) منفصلة للكوكيز وتسجيل الدخول. */
-class BrowserTab(val id: String, val ctxId: String, startUrl: String, val env: String) {
+/** تبويب واحد: جلسة Gecko خاصة به، وبيئة تخزين (ctxId) منفصلة للكوكيز وتسجيل الدخول،
+ * وينتمي إلى مساحة (space): "github" لمتصفح GitHub، أو "free:<معرّف النموذج>" للمتصفح المجاني،
+ * فتبقى تبويبات كل نموذج منفصلة عن تبويبات GitHub وعن باقي النماذج. */
+class BrowserTab(val id: String, val ctxId: String, startUrl: String, val env: String, val space: String) {
     var url by mutableStateOf(startUrl)
     var title by mutableStateOf("")
     var progress by mutableIntStateOf(0)
@@ -116,7 +118,14 @@ class BrowserTab(val id: String, val ctxId: String, startUrl: String, val env: S
 /** مركز المتصفح: محرك Gecko واحد للعملية، وقائمة التبويبات، وحفظها بين مرات التشغيل. */
 object BrowserHub {
     val tabs = mutableStateListOf<BrowserTab>()
-    var selectedId by mutableStateOf("")
+
+    /** التبويب المختار في كل مساحة على حدة، فيبقى اختيار متصفح GitHub مستقلاً عن اختيار كل نموذج. */
+    private val selectedBySpace = mutableStateMapOf<String, String>()
+
+    /** التبويب المختار في هذه المساحة، أو أول تبويب فيها إن لم يُختر واحد بعد. */
+    fun selectedTab(space: String): BrowserTab? =
+        tabs.firstOrNull { it.space == space && it.id == selectedBySpace[space] }
+            ?: tabs.firstOrNull { it.space == space }
 
     private var appCtx: Context? = null
     private var runtime: GeckoRuntime? = null
@@ -161,8 +170,8 @@ object BrowserHub {
         attachBridge(tab)
     }
 
-    /** يستعيد التبويبات المحفوظة أو يفتح واحداً جديداً. */
-    fun init(ctx: Context, homeUrl: String) {
+    /** يستعيد التبويبات المحفوظة أو يفتح واحداً جديداً في المساحة المطلوبة. */
+    fun init(ctx: Context, homeUrl: String, space: String = "github") {
         if (tabs.isNotEmpty()) return
         val st = Storage(ctx.applicationContext).also { storage = it }
         runtime(ctx)
@@ -170,21 +179,29 @@ object BrowserHub {
             val arr = JSONArray(st.setting("gecko_tabs", "[]"))
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
-                val t = BrowserTab(o.getString("id"), o.getString("ctx"), o.optString("url", homeUrl), o.optString("env", "A"))
+                val t = BrowserTab(o.getString("id"), o.getString("ctx"), o.optString("url", homeUrl), o.optString("env", "A"), o.optString("space", "github"))
                 register(ctx, t, true)
                 t.session.loadUri(t.url)
             }
         }
-        if (tabs.isEmpty()) newTab(ctx, homeUrl, null)
-        selectedId = st.setting("gecko_selected", "").takeIf { id -> tabs.any { it.id == id } } ?: tabs.first().id
+        runCatching {
+            val sel = JSONObject(st.setting("gecko_selected_map", "{}"))
+            sel.keys().forEach { k -> selectedBySpace[k] = sel.getString(k) }
+        }
+        // توافق قديم: اختيار واحد محفوظ قبل المساحات يُنسب لمتصفح GitHub.
+        if (!selectedBySpace.containsKey("github")) {
+            st.setting("gecko_selected", "").takeIf { id -> tabs.any { it.id == id && it.space == "github" } }
+                ?.let { selectedBySpace["github"] = it }
+        }
+        if (tabs.isEmpty()) newTab(ctx, homeUrl, null, space)
     }
 
-    /** تبويب جديد. ctxId = null → بيئة جديدة منفصلة؛ وإلا يشارك بيئة تبويب موجود. */
-    fun newTab(ctx: Context, url: String, ctxId: String?): BrowserTab {
+    /** تبويب جديد في مساحة معينة. ctxId = null → بيئة جديدة منفصلة؛ وإلا يشارك بيئة تبويب موجود. */
+    fun newTab(ctx: Context, url: String, ctxId: String?, space: String = "github"): BrowserTab {
         val id = UUID.randomUUID().toString().take(8)
         val envCtx = ctxId ?: ("env" + UUID.randomUUID().toString().take(8))
         val envName = tabs.firstOrNull { it.ctxId == envCtx }?.env ?: ('A' + (counter++ % 26)).toString() + (if (counter > 26) "${counter / 26}" else "")
-        val t = BrowserTab(id, envCtx, url, envName)
+        val t = BrowserTab(id, envCtx, url, envName, space)
         register(ctx, t, true)
         t.session.loadUri(url)
         select(t)
@@ -192,30 +209,54 @@ object BrowserHub {
         return t
     }
 
+    /** تبويب جديد لنموذج مجاني: يشارك بيئة النموذج نفسها (فيبقى مسجّلاً دخوله)،
+     * أو ينشئ بيئة جديدة للنموذج إن لم يكن له تبويب بعد. */
+    fun newTabForSpace(ctx: Context, space: String, url: String): BrowserTab {
+        val existing = tabs.firstOrNull { it.space == space }
+        return newTab(ctx, url, existing?.ctxId, space)
+    }
+
     internal fun openChild(parent: BrowserTab, uri: String): BrowserTab {
         val ctx = appCtx!!
-        val t = BrowserTab(UUID.randomUUID().toString().take(8), parent.ctxId, uri, parent.env)
+        val t = BrowserTab(UUID.randomUUID().toString().take(8), parent.ctxId, uri, parent.env, parent.space)
         register(ctx, t, false) // يفتحها Gecko بنفسه بعد إرجاعها
-        selectedId = t.id
+        selectedBySpace[t.space] = t.id
         persist()
         return t
     }
 
     fun select(tab: BrowserTab) {
-        selectedId = tab.id
+        selectedBySpace[tab.space] = tab.id
         tabs.forEach { if (it.session.isOpen) it.session.setActive(it === tab) }
-        storage?.saveSetting("gecko_selected", tab.id)
+        persistSelected()
+    }
+
+    private fun persistSelected() {
+        val st = storage ?: return
+        runCatching {
+            val o = JSONObject()
+            selectedBySpace.forEach { (k, v) -> o.put(k, v) }
+            st.saveSetting("gecko_selected_map", o.toString())
+            // توافق قديم: نحفظ اختيار GitHub في المفتاح القديم أيضاً.
+            selectedBySpace["github"]?.let { st.saveSetting("gecko_selected", it) }
+        }
     }
 
     fun close(tab: BrowserTab) {
-        val idx = tabs.indexOf(tab)
-        if (idx < 0) return
+        val spaceTabs = tabs.filter { it.space == tab.space }
+        val pos = spaceTabs.indexOf(tab)
+        if (pos < 0) return
         runCatching { tab.session.close() }
         tabs.remove(tab)
-        if (tabs.isEmpty()) {
-            appCtx?.let { newTab(it, "https://github.com", null) }
-        } else if (selectedId == tab.id) {
-            select(tabs[minOf(idx, tabs.size - 1)])
+        val remaining = tabs.filter { it.space == tab.space }
+        if (remaining.isEmpty()) {
+            selectedBySpace.remove(tab.space)
+            // إن أُغلق آخر تبويب في التطبيق كله وكان من GitHub، نفتح تبويب GitHub جديد كما قبل.
+            if (tab.space == "github" && tabs.isEmpty()) {
+                appCtx?.let { newTab(it, "https://github.com", null) }
+            }
+        } else if (selectedBySpace[tab.space] == tab.id) {
+            select(remaining[minOf(pos, remaining.size - 1)])
         }
         persist()
     }
@@ -230,9 +271,10 @@ object BrowserHub {
         val st = storage ?: return
         runCatching {
             val arr = JSONArray()
-            tabs.forEach { arr.put(JSONObject().put("id", it.id).put("ctx", it.ctxId).put("url", it.url).put("env", it.env)) }
+            tabs.forEach { arr.put(JSONObject().put("id", it.id).put("ctx", it.ctxId).put("url", it.url).put("env", it.env).put("space", it.space)) }
             st.saveSetting("gecko_tabs", arr.toString())
         }
+        persistSelected()
     }
 
     // ---- التنزيلات ----
@@ -303,7 +345,9 @@ fun GeckoBrowserTab(vm: RelayViewModel, gh: GhConfig) {
     val scope = rememberCoroutineScope()
     val base = "https://github.com/${gh.owner}/${gh.repo}"
     remember { BrowserHub.init(ctx, base); true }
-    val tab = BrowserHub.tabs.firstOrNull { it.id == BrowserHub.selectedId } ?: BrowserHub.tabs.firstOrNull()
+    // متصفح GitHub يعرض تبويبات مساحة github فقط، لا تبويبات المتصفح المجاني.
+    val spaceTabs = BrowserHub.tabs.filter { it.space == "github" }
+    val tab = BrowserHub.selectedTab("github")
 
     var addr by remember(tab?.id) { mutableStateOf(tab?.url ?: "") }
     LaunchedEffect(tab?.url) { tab?.url?.let { addr = it } }
@@ -328,7 +372,7 @@ fun GeckoBrowserTab(vm: RelayViewModel, gh: GhConfig) {
         // شريط التبويبات
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            BrowserHub.tabs.toList().forEach { t ->
+            spaceTabs.forEach { t ->
                 FilterChip(
                     selected = t.id == tab?.id,
                     onClick = { BrowserHub.select(t) },

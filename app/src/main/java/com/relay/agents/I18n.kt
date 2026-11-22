@@ -638,6 +638,8 @@ object Translations {
         "🟡 جارٍ الاتصال…" to "🟡 Connecting…",
         "🟢 متصل" to "🟢 Connected",
         "المتصفح المجاني" to "Free browser",
+        "رجوع" to "Back",
+        "تبويب جديد" to "New tab",
         "كل زر يفتح ذكاءً اصطناعياً في تبويب مستقل ببيئة تسجيل دخول منفصلة — سجّل دخولك بنفسك في كل موقع واكتب بنفسك. التطبيق لا يرسل شيئاً تلقائياً ولا يقرأ إجاباتك، والحدود المجانية تتغير مع الوقت." to "Each button opens an AI in its own tab with a separate login environment — sign in yourself on each site and type yourself. The app sends nothing automatically and never reads your answers, and free limits change over time.",
         "كتابة وبرمجة وملفات طويلة — مجاني بحد يومي، ثم يتوقف حتى يتجدد." to "Writing, coding and long documents — free with a daily limit, then it stops until it renews.",
         "الأشهر والأوسع استخداماً — مجاني بحد للرسائل، مع بحث وتوليد صور." to "The most popular and widely used — free with a message limit, with search and image generation.",
