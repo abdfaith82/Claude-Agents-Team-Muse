@@ -654,6 +654,7 @@ object Translations {
         "حسابك مسجل فيه — مجاني، لكن توفره حسب بلدك وقد يطلب انتظاراً." to "Your account is registered there — free, but availability depends on your country and it may ask you to wait.",
         "عرض مقسّم" to "Split view",
         "اختر نموذجين لعرضهما جنب بعض في نفس الوقت." to "Pick two models to show them side by side at the same time.",
+        "اختر نموذجين أو أكثر لعرضهم جنب بعض في نفس الوقت." to "Pick two or more models to show them side by side at the same time.",
         "عرض جنب بعض" to "Show side by side",
         "مختارة للتقسيم ✓" to "Picked for split ✓",
         "أدر هاتفك أفقياً لعرض أوسع — كل صفحة لها تبويباتها وأزرارها الخاصة." to "Rotate your phone sideways for a wider view — each page has its own tabs and buttons.",

@@ -92,11 +92,11 @@ fun FreeAiTab() {
     var openPage by remember { mutableStateOf<Int?>(null) }
     var picking by remember { mutableStateOf(false) }
     var splitPick by remember { mutableStateOf<List<Int>>(emptyList()) }
-    var splitPair by remember { mutableStateOf<Pair<Int, Int>?>(null) }
-    val pair = splitPair
-    if (pair != null) {
-        BackHandler { splitPair = null; splitPick = emptyList(); picking = false }
-        SplitFreeView(sites, pair.first, pair.second) { splitPair = null; splitPick = emptyList(); picking = false }
+    var splitPicked by remember { mutableStateOf<List<Int>?>(null) }
+    val picked = splitPicked
+    if (picked != null) {
+        BackHandler { splitPicked = null; splitPick = emptyList(); picking = false }
+        SplitFreeView(sites, picked) { splitPicked = null; splitPick = emptyList(); picking = false }
         return
     }
     val open = openPage
@@ -112,9 +112,9 @@ fun FreeAiTab() {
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             Button(onClick = { picking = !picking; if (!picking) splitPick = emptyList() }) { Text(if (picking) tr("إلغاء") else tr("عرض مقسّم")) }
-            if (picking) Text(tr("اختر نموذجين لعرضهما جنب بعض في نفس الوقت."), style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+            if (picking) Text(tr("اختر نموذجين أو أكثر لعرضهم جنب بعض في نفس الوقت."), style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
         }
-        if (picking && splitPick.size == 2) {
+        if (picking && splitPick.size >= 2) {
             Button(onClick = {
                 splitPick.forEach { idx ->
                     val picked = sites[idx]
@@ -122,7 +122,7 @@ fun FreeAiTab() {
                     BrowserHub.init(ctx, picked.url, sp)
                     if (BrowserHub.tabs.none { it.space == sp }) BrowserHub.newTabForSpace(ctx, sp, picked.url)
                 }
-                splitPair = splitPick[0] to splitPick[1]
+                splitPicked = splitPick
             }, modifier = Modifier.fillMaxWidth()) { Text(tr("عرض جنب بعض")) }
         }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -131,9 +131,8 @@ fun FreeAiTab() {
                 Card(Modifier.fillMaxWidth().clickable {
                     if (picking) {
                         // في وضع التقسيم: الضغطة تختار النموذج أو تلغي اختياره،
-                        // ولا تفتح متصفحه — ونموذجان مختلفان كحد أقصى.
-                        splitPick = if (idx in splitPick) splitPick - idx
-                            else if (splitPick.size < 2) splitPick + idx else splitPick
+                        // ولا تفتح متصفحه — ويمكن اختيار أي عدد من النماذج.
+                        splitPick = if (idx in splitPick) splitPick - idx else splitPick + idx
                     } else {
                         val space = "free:${s.id}"
                         BrowserHub.init(ctx, s.url, space)
@@ -290,19 +289,21 @@ private fun FreeBrowserPanel(site: FreeSite) {
     }
 }
 
-/** عرض التقسيم لجميع النماذج: نصفان جنب بعض في نفس الوقت، وكل نصف
- * قابل للسحب يميناً ويساراً لتبديل نموذجه — فأي نموذج من الأحد عشر
- * يمكن أن يكون في أي نصف. وإن سحبت النصفين إلى النموذج نفسه، يظهر
- * في النصف الثاني تنبيه بدلاً من فتح الجلسة نفسها في عرضين
- * (جلسة Gecko واحدة لا يمكن عرضها في نافذتين معاً).
- * الصفحتان ضيقتان في الوضع العمودي، فالأفضل تدوير الهاتف أفقياً. */
+/** عرض التقسيم لأي عدد من النماذج: المستخدم يختار نموذجين أو أكثر،
+ * والشاشة تعرض نموذجين جنب بعض في نفس الوقت — وكل نصف قابل للسحب
+ * يميناً ويساراً لتبديل نموذجه بين النماذج المختارة فقط، فيدور
+ * المستخدم بين كل النماذج التي اختارها دون الخروج من التقسيم.
+ * وإن سحبت النصفين إلى النموذج نفسه، يظهر في النصف الثاني تنبيه
+ * بدلاً من فتح الجلسة نفسها في عرضين (جلسة Gecko واحدة لا يمكن
+ * عرضها في نافذتين معاً). الصفحتان ضيقتان في الوضع العمودي،
+ * فالأفضل تدوير الهاتف أفقياً. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SplitFreeView(sites: List<FreeSite>, leftInitial: Int, rightInitial: Int, onBack: () -> Unit) {
-    val leftPager = rememberPagerState(initialPage = leftInitial) { sites.size }
-    val rightPager = rememberPagerState(initialPage = rightInitial) { sites.size }
-    val left = sites[leftPager.currentPage]
-    val right = sites[rightPager.currentPage]
+private fun SplitFreeView(sites: List<FreeSite>, picked: List<Int>, onBack: () -> Unit) {
+    val leftPager = rememberPagerState(initialPage = 0) { picked.size }
+    val rightPager = rememberPagerState(initialPage = 1) { picked.size }
+    val left = sites[picked[leftPager.currentPage]]
+    val right = sites[picked[rightPager.currentPage]]
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack) { Text(tr("رجوع")) }
@@ -315,7 +316,7 @@ private fun SplitFreeView(sites: List<FreeSite>, leftInitial: Int, rightInitial:
         Row(Modifier.fillMaxWidth().weight(1f)) {
             Box(Modifier.weight(1f).fillMaxHeight()) {
                 HorizontalPager(state = leftPager, modifier = Modifier.fillMaxSize()) { page ->
-                    FreeBrowserPanel(sites[page])
+                    FreeBrowserPanel(sites[picked[page]])
                 }
             }
             Box(Modifier.fillMaxHeight().width(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
@@ -329,7 +330,7 @@ private fun SplitFreeView(sites: List<FreeSite>, leftInitial: Int, rightInitial:
                             )
                         }
                     } else {
-                        FreeBrowserPanel(sites[page])
+                        FreeBrowserPanel(sites[picked[page]])
                     }
                 }
             }
