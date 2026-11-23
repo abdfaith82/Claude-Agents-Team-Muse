@@ -33,6 +33,8 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -41,6 +43,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,6 +53,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import org.mozilla.geckoview.GeckoView
 
 private data class FreeSite(val id: String, val name: String, val url: String, val desc: String)
@@ -91,12 +95,12 @@ fun FreeAiTab() {
     )
     var openPage by remember { mutableStateOf<Int?>(null) }
     var picking by remember { mutableStateOf(false) }
-    var splitPick by remember { mutableStateOf<List<Int>>(emptyList()) }
-    var splitPicked by remember { mutableStateOf<List<Int>?>(null) }
-    val picked = splitPicked
+    var tabPick by remember { mutableStateOf<List<Int>>(emptyList()) }
+    var tabbedPicked by remember { mutableStateOf<List<Int>?>(null) }
+    val picked = tabbedPicked
     if (picked != null) {
-        BackHandler { splitPicked = null; splitPick = emptyList(); picking = false }
-        SplitFreeView(sites, picked) { splitPicked = null; splitPick = emptyList(); picking = false }
+        BackHandler { tabbedPicked = null; tabPick = emptyList(); picking = false }
+        PickedModelsView(sites, picked) { tabbedPicked = null; tabPick = emptyList(); picking = false }
         return
     }
     val open = openPage
@@ -111,28 +115,28 @@ fun FreeAiTab() {
             style = MaterialTheme.typography.bodySmall
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Button(onClick = { picking = !picking; if (!picking) splitPick = emptyList() }) { Text(if (picking) tr("إلغاء") else tr("عرض مقسّم")) }
-            if (picking) Text(tr("اختر نموذجين أو أكثر لعرضهم جنب بعض في نفس الوقت."), style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+            Button(onClick = { picking = !picking; if (!picking) tabPick = emptyList() }) { Text(if (picking) tr("إلغاء") else tr("عرض بتبويبات")) }
+            if (picking) Text(tr("اختر نموذجين أو أكثر لعرض كل نموذج في صفحة مستقلة والتبديل من التبويب العلوي."), style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
         }
-        if (picking && splitPick.size >= 2) {
+        if (picking && tabPick.size >= 2) {
             Button(onClick = {
-                splitPick.forEach { idx ->
+                tabPick.forEach { idx ->
                     val picked = sites[idx]
                     val sp = "free:${picked.id}"
                     BrowserHub.init(ctx, picked.url, sp)
                     if (BrowserHub.tabs.none { it.space == sp }) BrowserHub.newTabForSpace(ctx, sp, picked.url)
                 }
-                splitPicked = splitPick
-            }, modifier = Modifier.fillMaxWidth()) { Text(tr("عرض جنب بعض")) }
+                tabbedPicked = tabPick
+            }, modifier = Modifier.fillMaxWidth()) { Text(tr("عرض النماذج المختارة")) }
         }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(sites, key = { it.id }) { s ->
                 val idx = sites.indexOf(s)
                 Card(Modifier.fillMaxWidth().clickable {
                     if (picking) {
-                        // في وضع التقسيم: الضغطة تختار النموذج أو تلغي اختياره،
+                        // في وضع التبويبات: الضغطة تختار النموذج أو تلغي اختياره،
                         // ولا تفتح متصفحه — ويمكن اختيار أي عدد من النماذج.
-                        splitPick = if (idx in splitPick) splitPick - idx else splitPick + idx
+                        tabPick = if (idx in tabPick) tabPick - idx else tabPick + idx
                     } else {
                         val space = "free:${s.id}"
                         BrowserHub.init(ctx, s.url, space)
@@ -146,7 +150,7 @@ fun FreeAiTab() {
                         Text(s.name, style = MaterialTheme.typography.titleMedium)
                         Text(s.desc, style = MaterialTheme.typography.bodySmall)
                         if (picking) {
-                            if (idx in splitPick) Text(tr("مختارة للتقسيم ✓"), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                            if (idx in tabPick) Text(tr("مختارة ✓"), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                         } else {
                             Text(tr("فتح"), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                         }
@@ -194,8 +198,8 @@ private fun FreeBrowserView(site: FreeSite, onBack: () -> Unit) {
 }
 
 /** لوحة متصفح نموذج واحد (تبويباته وأزراره وعرضه) — تُستخدم وحدها في متصفح
- * النموذج، ومرتين جنب بعض في عرض التقسيم، فلكل صفحة تبويباتها وجلسة
- * تسجيل دخولها المستقلة عن الصفحة الأخرى. */
+ * النموذج، ومرة لكل صفحة في عرض النماذج المختارة، فلكل صفحة تبويباتها وجلسة
+ * تسجيل دخولها المستقلة عن الصفحات الأخرى. */
 @Composable
 private fun FreeBrowserPanel(site: FreeSite) {
     val ctx = LocalContext.current
@@ -289,51 +293,35 @@ private fun FreeBrowserPanel(site: FreeSite) {
     }
 }
 
-/** عرض التقسيم لأي عدد من النماذج: المستخدم يختار نموذجين أو أكثر،
- * والشاشة تعرض نموذجين جنب بعض في نفس الوقت — وكل نصف قابل للسحب
- * يميناً ويساراً لتبديل نموذجه بين النماذج المختارة فقط، فيدور
- * المستخدم بين كل النماذج التي اختارها دون الخروج من التقسيم.
- * وإن سحبت النصفين إلى النموذج نفسه، يظهر في النصف الثاني تنبيه
- * بدلاً من فتح الجلسة نفسها في عرضين (جلسة Gecko واحدة لا يمكن
- * عرضها في نافذتين معاً). الصفحتان ضيقتان في الوضع العمودي،
- * فالأفضل تدوير الهاتف أفقياً. */
+/** عرض النماذج المختارة بتبويبات علوية: كل نموذج في صفحة مستقلة كاملة
+ * (لا نموذج يغطي نموذجاً آخر ولا نصفان جنب بعض)، والتبديل بينها من
+ * شريط التبويبات العلوي — الضغطة على اسم النموذج تفتح صفحته كاملة،
+ * والسحب يميناً ويساراً يبدّل الصفحة أيضاً ويُحدّث التبويب المختار. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SplitFreeView(sites: List<FreeSite>, picked: List<Int>, onBack: () -> Unit) {
-    val leftPager = rememberPagerState(initialPage = 0) { picked.size }
-    val rightPager = rememberPagerState(initialPage = 1) { picked.size }
-    val left = sites[picked[leftPager.currentPage]]
-    val right = sites[picked[rightPager.currentPage]]
+private fun PickedModelsView(sites: List<FreeSite>, picked: List<Int>, onBack: () -> Unit) {
+    val pagerState = rememberPagerState { picked.size }
+    val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack) { Text(tr("رجوع")) }
-            Text(left.name + " ⇄ " + right.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            Text(tr("النماذج المختارة"), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+        }
+        ScrollableTabRow(selectedTabIndex = pagerState.currentPage, edgePadding = 0.dp) {
+            picked.forEachIndexed { i, idx ->
+                Tab(
+                    selected = pagerState.currentPage == i,
+                    onClick = { scope.launch { pagerState.scrollToPage(i) } },
+                    text = { Text(sites[idx].name) }
+                )
+            }
         }
         Text(
-            tr("اسحب في كل نصف لتبديل النموذج فيه — وأدر هاتفك أفقياً لعرض أوسع."),
-            style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp)
+            tr("بدّل من التبويب العلوي أو اسحب يميناً ويساراً."),
+            style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
         )
-        Row(Modifier.fillMaxWidth().weight(1f)) {
-            Box(Modifier.weight(1f).fillMaxHeight()) {
-                HorizontalPager(state = leftPager, modifier = Modifier.fillMaxSize()) { page ->
-                    FreeBrowserPanel(sites[picked[page]])
-                }
-            }
-            Box(Modifier.fillMaxHeight().width(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
-            Box(Modifier.weight(1f).fillMaxHeight()) {
-                HorizontalPager(state = rightPager, modifier = Modifier.fillMaxSize()) { page ->
-                    if (page == leftPager.currentPage) {
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text(
-                                tr("هذا النموذج معروض في النصف الآخر — اسحب لاختيار نموذج آخر."),
-                                style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(12.dp)
-                            )
-                        }
-                    } else {
-                        FreeBrowserPanel(sites[picked[page]])
-                    }
-                }
-            }
+        HorizontalPager(state = pagerState, modifier = Modifier.fillMaxWidth().weight(1f)) { page ->
+            FreeBrowserPanel(sites[picked[page]])
         }
     }
 }
