@@ -211,6 +211,7 @@ private fun FreeBrowserPanel(site: FreeSite) {
     var addr by remember(tab?.id) { mutableStateOf(tab?.url ?: "") }
     LaunchedEffect(tab?.url) { tab?.url?.let { addr = it } }
     var moreMenu by remember { mutableStateOf(false) }
+    var plusMenu by remember { mutableStateOf(false) }
 
     BackHandler(enabled = tab?.canBack == true) { tab?.session?.goBack() }
 
@@ -239,8 +240,17 @@ private fun FreeBrowserPanel(site: FreeSite) {
                     trailingIcon = { Text("✕", Modifier.clickable { BrowserHub.close(t) }.padding(2.dp)) }
                 )
             }
-            // زر + يفتح تبويباً جديداً للنموذج نفسه: نفس الرابط، ونفس بيئة تسجيل الدخول.
-            AssistChip(onClick = { BrowserHub.newTabForSpace(ctx, space, site.url) }, label = { Text("＋") })
+            // زر + يفتح قائمة كما في متصفح GitHub: تبويب جديد ببيئة منفصلة
+            // تماماً (تسجيل دخول مستقل)، أو تبويب بنفس بيئة التبويب الحالي.
+            Box {
+                AssistChip(onClick = { plusMenu = true }, label = { Text("＋") })
+                DropdownMenu(expanded = plusMenu, onDismissRequest = { plusMenu = false }) {
+                    DropdownMenuItem(text = { Text(tr("تبويب جديد (بيئة منفصلة)")) },
+                        onClick = { plusMenu = false; BrowserHub.newTab(ctx, site.url, null, space) })
+                    if (tab != null) DropdownMenuItem(text = { Text(trf("تبويب بنفس بيئة %s", tab.env)) },
+                        onClick = { plusMenu = false; BrowserHub.newTab(ctx, site.url, tab.ctxId, space) })
+                }
+            }
         }
         if (tab != null) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
