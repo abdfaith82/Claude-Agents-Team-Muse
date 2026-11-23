@@ -652,5 +652,13 @@ object Translations {
         "أوروبي (Le Chat) — مجاني بحد يومي، وبياناته في أوروبا." to "European (Le Chat) — free with a daily limit, and its data stays in Europe.",
         "من xAI — أخبار لحظية من منصة X، مجاني بحد محدود." to "From xAI — live news from X, free with a limited allowance.",
         "حسابك مسجل فيه — مجاني، لكن توفره حسب بلدك وقد يطلب انتظاراً." to "Your account is registered there — free, but availability depends on your country and it may ask you to wait.",
+        "عرض مقسّم" to "Split view",
+        "اختر نموذجين لعرضهما جنب بعض في نفس الوقت." to "Pick two models to show them side by side at the same time.",
+        "عرض جنب بعض" to "Show side by side",
+        "مختارة للتقسيم ✓" to "Picked for split ✓",
+        "أدر هاتفك أفقياً لعرض أوسع — كل صفحة لها تبويباتها وأزرارها الخاصة." to "Rotate your phone sideways for a wider view — each page has its own tabs and buttons.",
+        "اسحب يميناً أو يساراً للتبديل بين النماذج." to "Swipe right or left to switch between models.",
+        "اسحب في كل نصف لتبديل النموذج فيه — وأدر هاتفك أفقياً لعرض أوسع." to "Swipe in each half to change the model in it — and rotate your phone sideways for a wider view.",
+        "هذا النموذج معروض في النصف الآخر — اسحب لاختيار نموذج آخر." to "This model is already shown in the other half — swipe to pick another model.",
     )
 }

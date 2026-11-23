@@ -227,7 +227,9 @@ object BrowserHub {
 
     fun select(tab: BrowserTab) {
         selectedBySpace[tab.space] = tab.id
-        tabs.forEach { if (it.session.isOpen) it.session.setActive(it === tab) }
+        // نفعّل تبويبات هذه المساحة فقط، فتبقى جلسة المساحة الأخرى مفعّلة —
+        // وهذا ما يجعل عرض التقسيم يعمل: صفحتان جنب بعض في نفس الوقت.
+        tabs.forEach { if (it.session.isOpen && it.space == tab.space) it.session.setActive(it === tab) }
         persistSelected()
     }
 
