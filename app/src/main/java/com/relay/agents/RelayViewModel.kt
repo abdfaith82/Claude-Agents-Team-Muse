@@ -73,6 +73,10 @@ class RelayViewModel(app: Application) : AndroidViewModel(app) {
     /** نص ينتظر شاشة توليد الفيديو: زر «إرسال إلى توليد الفيديو» في
      * المحادثة يضعه هنا، فتقرأه شاشة الفيديو وتحوّله إلى مشاهد. */
     var pendingVideoText by mutableStateOf("")
+    /** موقع فيديو ينتظر المتصفح المجاني: زر «إرسال إلى موقع» في شاشة
+     * الفيديو يضعه هنا، فيفتحه المتصفح المجاني تلقائياً (والوصف منسوخ
+     * أصلاً في الحافظة). */
+    var pendingSiteId by mutableStateOf("")
     var chatBusy by mutableStateOf(false)
         private set
     var chatStatus by mutableStateOf("")

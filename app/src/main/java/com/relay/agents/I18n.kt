@@ -441,6 +441,8 @@ object Translations {
         "تثبيت هذا التبويب" to "Pin this tab",
         "فك تثبيت هذا التبويب" to "Unpin this tab",
         "🎬 إرسال إلى توليد الفيديو" to "🎬 Send to video generation",
+        "إرسال إلى موقع" to "Send to a site",
+        "تم نسخ الوصف — الصقه في صندوق الوصف في الموقع" to "Description copied — paste it into the site's prompt box",
         "مزود الفيديو" to "Video provider",
         "نماذج Magic Hour المجانية (480p)" to "Magic Hour free models (480p)",
         "تم حفظ المفتاح" to "Key saved",

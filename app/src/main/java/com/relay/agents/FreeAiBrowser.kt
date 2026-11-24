@@ -207,6 +207,22 @@ fun FreeAiTab(vm: RelayViewModel, onOpenPicked: () -> Unit) {
     var tabPick by remember { mutableStateOf<List<Int>>(emptyList()) }
     // الجلسات المحفوظة: تُستعاد تلقائياً عند فتح القائمة.
     remember { PickedModelsStore.load(ctx); true }
+    // موقع أُرسل إليه وصف من شاشة الفيديو: يُفتح تبويبه تلقائياً
+    // (والوصف منسوخ أصلاً في الحافظة، فيلصقه المستخدم في الموقع).
+    LaunchedEffect(vm.pendingSiteId) {
+        val id = vm.pendingSiteId
+        if (id.isNotBlank()) {
+            vm.pendingSiteId = ""
+            val idx = sites.indexOfFirst { it.id == id }
+            if (idx >= 0) {
+                val s = sites[idx]
+                val space = "free:${s.id}"
+                BrowserHub.init(ctx, s.url, space)
+                BrowserHub.newTabForSpace(ctx, space, s.url)
+                openPage = idx
+            }
+        }
+    }
     val open = openPage
     if (open != null) {
         BackHandler { openPage = null }

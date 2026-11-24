@@ -1,11 +1,16 @@
 package com.relay.agents
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.graphics.BitmapFactory
 import android.widget.MediaController
+import android.widget.Toast
 import android.widget.VideoView
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,6 +22,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -43,6 +50,11 @@ import kotlinx.coroutines.launch
 import java.io.File
 
 private enum class SceneStatus { IDLE, WRITING, VIDEO, READY, FAILED }
+
+/** مواقع الفيديو في المتصفح المجاني التي يمكن إرسال وصف المشهد إليها
+ * (نسخ الوصف إلى الحافظة + فتح تبويب الموقع — فلا API مجانياً ولا
+ * معامل رابط يعبّئ الوصف تلقائياً في أي منها، حسب بحث 2026-11-24). */
+private val VIDEO_SITE_IDS = setOf("flow", "dreamina", "pixverse", "kling", "haiper", "hailuo", "pika")
 
 private data class SceneState(
     val index: Int,
@@ -82,7 +94,7 @@ private fun splitScenes(text: String, maxScenes: Int = 6): List<String> {
 }
 
 @Composable
-fun VideoGenTab(vm: RelayViewModel) {
+fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
     val ctx = LocalContext.current
     val storage = remember { Storage(ctx) }
     val cfg = remember { VideoGenConfig(storage) }
@@ -100,6 +112,7 @@ fun VideoGenTab(vm: RelayViewModel) {
     var busy by remember { mutableStateOf(false) }
     var playing by remember { mutableStateOf<File?>(null) }
     val scope = rememberCoroutineScope()
+    val videoSites = remember { freeSitesList().filter { it.id in VIDEO_SITE_IDS } }
 
     LaunchedEffect(Unit) {
         VideoGenClient.listVideoModels()
@@ -445,6 +458,7 @@ fun VideoGenTab(vm: RelayViewModel) {
             }
         }
         items(scenes, key = { it.index }) { s ->
+            var sendMenu by remember(s.index) { mutableStateOf(false) }
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(trf("المشهد %s", s.index + 1), style = MaterialTheme.typography.titleSmall)
@@ -491,6 +505,27 @@ fun VideoGenTab(vm: RelayViewModel) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (s.status == SceneStatus.READY && s.videoFile != null) {
                             OutlinedButton(onClick = { playing = s.videoFile }) { Text(tr("تشغيل")) }
+                        }
+                        if (s.visualPrompt.isNotBlank()) {
+                            // إرسال إلى موقع فيديو: ينسخ وصف المشهد إلى الحافظة
+                            // ويفتح تبويب الموقع، فيلصق المستخدم الوصف بضغطة
+                            // واحدة — هذا هو الربط المجاني الممكن (لا API مجاني
+                            // ولا معامل رابط في أي موقع من السبعة).
+                            Box {
+                                OutlinedButton(onClick = { sendMenu = true }) { Text(tr("إرسال إلى موقع")) }
+                                DropdownMenu(expanded = sendMenu, onDismissRequest = { sendMenu = false }) {
+                                    videoSites.forEach { site ->
+                                        DropdownMenuItem(text = { Text(site.name) }, onClick = {
+                                            sendMenu = false
+                                            val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                            cm.setPrimaryClip(ClipData.newPlainText("video prompt", s.visualPrompt))
+                                            vm.pendingSiteId = site.id
+                                            Toast.makeText(ctx, tr("تم نسخ الوصف — الصقه في صندوق الوصف في الموقع"), Toast.LENGTH_LONG).show()
+                                            onOpenSite()
+                                        })
+                                    }
+                                }
+                            }
                         }
                         if (s.visualPrompt.isNotBlank() && s.imageFile == null && s.imageStatus != "loading") {
                             OutlinedButton(onClick = { scope.launch { generateImageForScene(s.index) } }, enabled = !busy) {

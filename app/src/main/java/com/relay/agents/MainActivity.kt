@@ -484,7 +484,7 @@ fun RelayScreen(vm: RelayViewModel) {
                     18 -> VpnTab(vm)
                     19 -> TestStationTab(vm) { go(it) }
                     20 -> Muse4AiTab()
-                    21 -> VideoGenTab(vm)
+                    21 -> VideoGenTab(vm, onOpenSite = { go(22) })
                     22 -> FreeAiTab(vm) { go(23) }
                     23 -> PickedModelsTab(vm) { if (backStack.isNotEmpty()) dest = backStack.removeAt(backStack.lastIndex) else dest = 22 }
                     6 -> GitHubTab(vm, gh)
