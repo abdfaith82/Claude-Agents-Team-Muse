@@ -446,6 +446,7 @@ object Translations {
         "📷 إرسال الصورة إلى موقع" to "📷 Send the image to a site",
         "تعذّر حفظ الصورة" to "Could not save the image",
         "حُفظت الصورة في التنزيلات ونُسخ الوصف — في الموقع اضغط زر الصورة واخترها من التنزيلات ثم الصق الوصف" to "Image saved to Downloads and description copied — in the site, tap the image button, pick it from Downloads, then paste the description",
+        "بدّل بين النماذج من التبويب العلوي." to "Switch between models from the top tab bar.",
         "مزود الفيديو" to "Video provider",
         "نماذج Magic Hour المجانية (480p)" to "Magic Hour free models (480p)",
         "تم حفظ المفتاح" to "Key saved",

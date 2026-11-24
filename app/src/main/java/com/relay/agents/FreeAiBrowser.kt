@@ -356,10 +356,14 @@ private fun FreeModelsPager(sites: List<FreeSite>, initialPage: Int, vm: RelayVi
             }
         }
         Text(
-            tr("بدّل من التبويب العلوي أو اسحب يميناً ويساراً."),
+            tr("بدّل بين النماذج من التبويب العلوي."),
             style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
         )
-        HorizontalPager(state = pagerState, modifier = Modifier.fillMaxWidth().weight(1f)) { page ->
+        // السحب معطّل عمداً: الـ Pager كان يسرق كل سحبة أفقية، فلا تصل
+        // سحبات الصفحة نفسها (قوائم أفقية، تمرير داخلي) أبداً، وأي سحبة
+        // كانت تقلب النماذج فجأة — فصار التحكم غير سلس. التبديل الآن من
+        // التبويب العلوي فقط (ضغطة واحدة، قفزة فورية).
+        HorizontalPager(state = pagerState, modifier = Modifier.fillMaxWidth().weight(1f), userScrollEnabled = false) { page ->
             FreeBrowserPanel(sites[page], vm, active = pagerState.currentPage == page)
         }
     }
@@ -592,8 +596,8 @@ private fun FreeBrowserPanel(site: FreeSite, vm: RelayViewModel, active: Boolean
 
 /** عرض النماذج المختارة بتبويبات علوية: كل نموذج في صفحة مستقلة كاملة
  * (لا نموذج يغطي نموذجاً آخر ولا نصفان جنب بعض)، والتبديل بينها من
- * شريط التبويبات العلوي — الضغطة على اسم النموذج تفتح صفحته كاملة،
- * والسحب يميناً ويساراً يبدّل الصفحة أيضاً ويُحدّث التبويب المختار. */
+ * شريط التبويبات العلوي فقط — الضغطة على اسم النموذج تفتح صفحته كاملة؛
+ * السحب معطّل عمداً حتى تصل سحبات الصفحة نفسها إليها. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PickedModelsView(sites: List<FreeSite>, picked: List<Int>, vm: RelayViewModel, onBack: () -> Unit) {
@@ -649,10 +653,12 @@ private fun PickedModelsView(sites: List<FreeSite>, picked: List<Int>, vm: Relay
                     }
                 }
                 Text(
-                    tr("بدّل من التبويب العلوي أو اسحب يميناً ويساراً."),
+                    tr("بدّل بين النماذج من التبويب العلوي."),
                     style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
                 )
-                HorizontalPager(state = pagerState, modifier = Modifier.fillMaxWidth().weight(1f)) { page ->
+                // السحب معطّل عمداً لنفس السبب: سحبات الصفحة نفسها تصل إليها،
+                // والتبديل من التبويب العلوي فقط.
+                HorizontalPager(state = pagerState, modifier = Modifier.fillMaxWidth().weight(1f), userScrollEnabled = false) { page ->
                     FreeBrowserPanel(sites[picked[page]], vm, active = pagerState.currentPage == page)
                 }
             }
