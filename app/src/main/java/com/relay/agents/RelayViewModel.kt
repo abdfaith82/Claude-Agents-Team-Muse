@@ -70,6 +70,9 @@ class RelayViewModel(app: Application) : AndroidViewModel(app) {
 
     var chat by mutableStateOf(chatStore.load())
         private set
+    /** نص ينتظر شاشة توليد الفيديو: زر «إرسال إلى توليد الفيديو» في
+     * المحادثة يضعه هنا، فتقرأه شاشة الفيديو وتحوّله إلى مشاهد. */
+    var pendingVideoText by mutableStateOf("")
     var chatBusy by mutableStateOf(false)
         private set
     var chatStatus by mutableStateOf("")

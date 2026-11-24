@@ -197,6 +197,17 @@ fun VideoGenTab(vm: RelayViewModel) {
         }
     }
 
+    // ربط المحادثة بالفيديو: نص أُرسل من رد نموذج نصي في المحادثة
+    // يصل هنا فيتحول تلقائياً إلى مشاهد جاهزة للتوليد.
+    LaunchedEffect(vm.pendingVideoText) {
+        val t = vm.pendingVideoText
+        if (t.isNotBlank()) {
+            vm.pendingVideoText = ""
+            longText = t
+            writeScenes()
+        }
+    }
+
     /** السلسلة — المرحلة الوسطى: يولّد نموذج الصورة إطار المشهد
      * من الوصف نفسه (Pollinations بلا مفتاح في العادة). */
     suspend fun generateImageForScene(i: Int): Boolean {

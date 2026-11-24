@@ -64,6 +64,8 @@ class BrowserTab(val id: String, val ctxId: String, startUrl: String, val env: S
     var loading by mutableStateOf(false)
     var canBack by mutableStateOf(false)
     var canFwd by mutableStateOf(false)
+    /** مثبّت: يبقى أول شريط التبويبات ولا يُغلق إلا بعد فك التثبيت. */
+    var pinned by mutableStateOf(false)
 
     @Volatile var port: WebExtension.Port? = null
     private val pending = ConcurrentHashMap<String, CompletableDeferred<JSONObject>>()
@@ -197,6 +199,36 @@ fun deliverPickedFiles(ctx: Context, uris: List<Uri>?) {
     }.start()
 }
 
+/** شريط تقدم تحميل تبويب — مكوّن مستقل صغير حتى لا تُعيد قراءة
+ * تقدّم التحميل (تتغير عشرات المرات أثناء التحميل) تركيب لوحة
+ * المتصفح كلها في كل مرة، فيبقى التحكم بالمتصفح سلساً. */
+@Composable
+internal fun TabProgressBar(tab: BrowserTab) {
+    if (tab.loading && tab.progress in 1..99) LinearProgressIndicator(
+        progress = { tab.progress / 100f }, modifier = Modifier.fillMaxWidth()
+    )
+}
+
+/** شريحة تبويب واحدة — مكوّن مستقل حتى تبقى قراءة عنوان التبويب
+ * ورابطه محصورة فيه. المثبّت يظهر 📌 ويُخفى زر إغلاقه. */
+@Composable
+internal fun BrowserTabChip(t: BrowserTab, selected: Boolean, onSelect: () -> Unit, onClose: () -> Unit) {
+    FilterChip(
+        selected = selected,
+        onClick = onSelect,
+        label = {
+            Text(
+                (if (t.pinned) "📌" else "🔒") + t.env + " · " +
+                    t.title.ifBlank { Uri.parse(t.url).host ?: tr("تبويب") }.take(16),
+                maxLines = 1
+            )
+        },
+        trailingIcon = if (t.pinned) null else {
+            { Text("✕", Modifier.clickable { onClose() }.padding(8.dp)) }
+        }
+    )
+}
+
 /** مركز المتصفح: محرك Gecko واحد للعملية، وقائمة التبويبات، وحفظها بين مرات التشغيل. */
 object BrowserHub {
     val tabs = mutableStateListOf<BrowserTab>()
@@ -262,6 +294,7 @@ object BrowserHub {
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
                 val t = BrowserTab(o.getString("id"), o.getString("ctx"), o.optString("url", homeUrl), o.optString("env", "A"), o.optString("space", "github"))
+                t.pinned = o.optBoolean("pinned", false)
                 register(ctx, t, true)
                 t.session.loadUri(t.url)
             }
@@ -326,7 +359,14 @@ object BrowserHub {
         }
     }
 
+    /** يثبّت تبويباً أو يفك تثبيته (المثبّت يبقى أول الشريط ولا يُغلق). */
+    fun togglePin(tab: BrowserTab) {
+        tab.pinned = !tab.pinned
+        persist()
+    }
+
     fun close(tab: BrowserTab) {
+        if (tab.pinned) return // المثبّت لا يُغلق إلا بعد فك تثبيته.
         val spaceTabs = tabs.filter { it.space == tab.space }
         val pos = spaceTabs.indexOf(tab)
         if (pos < 0) return
@@ -355,7 +395,7 @@ object BrowserHub {
         val st = storage ?: return
         runCatching {
             val arr = JSONArray()
-            tabs.forEach { arr.put(JSONObject().put("id", it.id).put("ctx", it.ctxId).put("url", it.url).put("env", it.env).put("space", it.space)) }
+            tabs.forEach { arr.put(JSONObject().put("id", it.id).put("ctx", it.ctxId).put("url", it.url).put("env", it.env).put("space", it.space).put("pinned", it.pinned)) }
             st.saveSetting("gecko_tabs", arr.toString())
         }
         persistSelected()
@@ -469,13 +509,8 @@ fun GeckoBrowserTab(vm: RelayViewModel, gh: GhConfig) {
         // شريط التبويبات
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            spaceTabs.forEach { t ->
-                FilterChip(
-                    selected = t.id == tab?.id,
-                    onClick = { BrowserHub.select(t) },
-                    label = { Text("🔒${t.env} · " + t.title.ifBlank { Uri.parse(t.url).host ?: tr("تبويب") }.take(16), maxLines = 1) },
-                    trailingIcon = { Text("✕", Modifier.clickable { BrowserHub.close(t) }.padding(2.dp)) }
-                )
+            spaceTabs.sortedByDescending { it.pinned }.forEach { t ->
+                BrowserTabChip(t, t.id == tab?.id, onSelect = { BrowserHub.select(t) }, onClose = { BrowserHub.close(t) })
             }
             Box {
                 AssistChip(onClick = { plusMenu = true }, label = { Text("＋") })
@@ -506,6 +541,9 @@ fun GeckoBrowserTab(vm: RelayViewModel, gh: GhConfig) {
                             moreMenu = false
                             runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(tab.url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
                         })
+                        DropdownMenuItem(text = { Text(if (tab.pinned) tr("فك تثبيت هذا التبويب") else tr("تثبيت هذا التبويب")) }, onClick = {
+                            moreMenu = false; BrowserHub.togglePin(tab)
+                        })
                         DropdownMenuItem(text = { Text(trf("مسح بيانات البيئة %s", tab.env)) }, onClick = {
                             moreMenu = false; BrowserHub.clearEnvironment(tab)
                         })
@@ -519,7 +557,7 @@ fun GeckoBrowserTab(vm: RelayViewModel, gh: GhConfig) {
                     "Google" to "https://accounts.google.com"
                 ).forEach { (label, url) -> AssistChip(onClick = { tab.session.loadUri(url) }, label = { Text(label) }) }
             }
-            if (tab.loading && tab.progress in 1..99) LinearProgressIndicator(progress = { tab.progress / 100f }, modifier = Modifier.fillMaxWidth())
+            TabProgressBar(tab)
 
             // لا نربط العرض إلا بعد فتح الجلسة (تبويبات النوافذ المنبثقة يفتحها Gecko بنفسه).
             var ready by remember(tab.id) { mutableStateOf(tab.session.isOpen) }
@@ -533,13 +571,14 @@ fun GeckoBrowserTab(vm: RelayViewModel, gh: GhConfig) {
                 if (ready) spaceTabs.forEach { t -> t.session.setActive(t.id == tab.id) }
             }
             if (ready) {
-                key(tab.id) {
-                    AndroidView(
-                        modifier = Modifier.fillMaxWidth().weight(1f),
-                        factory = { c -> GeckoView(c).also { it.setSession(tab.session) } },
-                        onRelease = { it.releaseSession() }
-                    )
-                }
+                // عرض واحد يُعاد استخدامه عند تبديل التبويبات (تبديل الجلسة
+                // فقط) بدل إنشاء GeckoView جديد في كل مرة — أخف وأسلس.
+                AndroidView(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    factory = { c -> GeckoView(c) },
+                    update = { view -> if (view.session != tab.session) view.setSession(tab.session) },
+                    onRelease = { it.releaseSession() }
+                )
             } else {
                 Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
             }

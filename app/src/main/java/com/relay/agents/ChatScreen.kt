@@ -16,7 +16,7 @@ import androidx.compose.ui.unit.dp
 
 /** شاشة المحادثة: دردشة مع فريق النماذج، وتحكم بأسلوب التنسيق بينها بتعليمات حرة. */
 @Composable
-fun ChatTab(vm: RelayViewModel, onOpenRun: () -> Unit) {
+fun ChatTab(vm: RelayViewModel, onOpenVideo: () -> Unit = {}, onOpenRun: () -> Unit) {
     var input by remember { mutableStateOf("") }
     var panel by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
@@ -72,7 +72,7 @@ fun ChatTab(vm: RelayViewModel, onOpenRun: () -> Unit) {
                 state = listState, modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 8.dp)
             ) {
-                items(msgs.size) { i -> Bubble(msgs[i]) }
+                items(msgs.size) { i -> Bubble(msgs[i], vm, onOpenVideo) }
                 if (vm.chatBusy) {
                     item {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -163,7 +163,7 @@ private fun CoordinationPanel(vm: RelayViewModel) {
 }
 
 @Composable
-private fun Bubble(m: ChatMsg) {
+private fun Bubble(m: ChatMsg, vm: RelayViewModel, onOpenVideo: () -> Unit) {
     val mine = m.role == "user"
     var open by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) {
@@ -176,6 +176,14 @@ private fun Bubble(m: ChatMsg) {
             Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (!mine && m.by.isNotEmpty()) Text(m.by, style = MaterialTheme.typography.labelSmall)
                 SelectionContainer { Text(m.text, style = MaterialTheme.typography.bodyMedium) }
+                // ربط النماذج النصية بنماذج الفيديو: رد النموذج النصي
+                // (مثل وصف مشهد كتبه Grok) يُرسل كما هو إلى شاشة توليد
+                // الفيديو، فتتحول مشاهده إلى مقاطع بنماذج الفيديو.
+                if (!mine && m.by != "system" && m.text.isNotBlank()) {
+                    TextButton(onClick = { vm.pendingVideoText = m.text; onOpenVideo() }) {
+                        Text(tr("🎬 إرسال إلى توليد الفيديو"))
+                    }
+                }
                 if (m.extras.isNotEmpty()) {
                     TextButton(onClick = { open = !open }) {
                         Text(if (open) tr("إخفاء الإجابات الفردية") else trf("عرض الإجابات الفردية (%s)", m.extras.size))

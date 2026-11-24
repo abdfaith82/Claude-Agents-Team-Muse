@@ -471,7 +471,7 @@ fun RelayScreen(vm: RelayViewModel) {
                     2 -> ProjectsTab(vm, actions, query, false, { go(1) }) { renameTarget = it }
                     4 -> ProjectsTab(vm, actions, query, true, { go(1) }) { renameTarget = it }
                     5 -> FilesTab(vm, query)
-                    8 -> ChatTab(vm) { go(1) }
+                    8 -> ChatTab(vm, onOpenVideo = { go(21) }) { go(1) }
                     9 -> ProfileTab(vm)
                     10 -> CapabilitiesTab(vm)
                     11 -> DocsTab()

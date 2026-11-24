@@ -318,6 +318,7 @@ fun PickedModelsTab(vm: RelayViewModel, onBack: () -> Unit) {
 @Composable
 private fun FreeModelsPager(sites: List<FreeSite>, initialPage: Int, vm: RelayViewModel, onBack: () -> Unit) {
     val pagerState = rememberPagerState(initialPage = initialPage) { sites.size }
+    val scope = rememberCoroutineScope()
     val site = sites[pagerState.currentPage]
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -325,9 +326,20 @@ private fun FreeModelsPager(sites: List<FreeSite>, initialPage: Int, vm: RelayVi
             Text(site.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
             Text("${pagerState.currentPage + 1} / ${sites.size}", style = MaterialTheme.typography.bodySmall)
         }
+        // شريط تبويبات علوي: ضغطة واحدة تفتح أي نموذج بدل السحب عبر 21 صفحة —
+        // أسلس وأكثر توافقاً مع الهاتف.
+        ScrollableTabRow(selectedTabIndex = pagerState.currentPage, edgePadding = 0.dp) {
+            sites.forEachIndexed { i, s ->
+                Tab(
+                    selected = pagerState.currentPage == i,
+                    onClick = { scope.launch { pagerState.scrollToPage(i) } },
+                    text = { Text(s.name) }
+                )
+            }
+        }
         Text(
-            tr("اسحب يميناً أو يساراً للتبديل بين النماذج."),
-            style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp)
+            tr("بدّل من التبويب العلوي أو اسحب يميناً ويساراً."),
+            style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
         )
         HorizontalPager(state = pagerState, modifier = Modifier.fillMaxWidth().weight(1f)) { page ->
             FreeBrowserPanel(sites[page], vm, active = pagerState.currentPage == page)
@@ -436,13 +448,8 @@ private fun FreeBrowserPanel(site: FreeSite, vm: RelayViewModel, active: Boolean
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            spaceTabs.forEach { t ->
-                FilterChip(
-                    selected = t.id == tab?.id,
-                    onClick = { BrowserHub.select(t) },
-                    label = { Text("🔒${t.env} · " + t.title.ifBlank { Uri.parse(t.url).host ?: tr("تبويب") }.take(16), maxLines = 1) },
-                    trailingIcon = { Text("✕", Modifier.clickable { BrowserHub.close(t) }.padding(2.dp)) }
-                )
+            spaceTabs.sortedByDescending { it.pinned }.forEach { t ->
+                BrowserTabChip(t, t.id == tab?.id, onSelect = { BrowserHub.select(t) }, onClose = { BrowserHub.close(t) })
             }
             // زر + يفتح قائمة كما في متصفح GitHub: تبويب جديد ببيئة منفصلة
             // تماماً (تسجيل دخول مستقل)، أو تبويب بنفس بيئة التبويب الحالي.
@@ -495,13 +502,16 @@ private fun FreeBrowserPanel(site: FreeSite, vm: RelayViewModel, active: Boolean
                             moreMenu = false
                             runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(tab.url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
                         })
+                        DropdownMenuItem(text = { Text(if (tab.pinned) tr("فك تثبيت هذا التبويب") else tr("تثبيت هذا التبويب")) }, onClick = {
+                            moreMenu = false; BrowserHub.togglePin(tab)
+                        })
                         DropdownMenuItem(text = { Text(trf("مسح بيانات البيئة %s", tab.env)) }, onClick = {
                             moreMenu = false; BrowserHub.clearEnvironment(tab)
                         })
                     }
                 }
             }
-            if (tab.loading && tab.progress in 1..99) LinearProgressIndicator(progress = { tab.progress / 100f }, modifier = Modifier.fillMaxWidth())
+            TabProgressBar(tab)
 
             var ready by remember(tab.id) { mutableStateOf(tab.session.isOpen) }
             LaunchedEffect(tab.id) {
@@ -516,13 +526,14 @@ private fun FreeBrowserPanel(site: FreeSite, vm: RelayViewModel, active: Boolean
                 if (ready) spaceTabs.forEach { t -> t.session.setActive(active && t.id == tab.id) }
             }
             if (ready) {
-                key(tab.id) {
-                    AndroidView(
-                        modifier = Modifier.fillMaxWidth().weight(1f),
-                        factory = { c -> GeckoView(c).also { it.setSession(tab.session) } },
-                        onRelease = { it.releaseSession() }
-                    )
-                }
+                // عرض واحد يُعاد استخدامه عند تبديل التبويبات (تبديل الجلسة
+                // فقط) بدل إنشاء GeckoView جديد في كل مرة — أخف وأسلس.
+                AndroidView(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    factory = { c -> GeckoView(c) },
+                    update = { view -> if (view.session != tab.session) view.setSession(tab.session) },
+                    onRelease = { it.releaseSession() }
+                )
             } else {
                 Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
             }
