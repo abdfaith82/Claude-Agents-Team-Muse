@@ -148,11 +148,93 @@ object VideoGenClient {
         }
 }
 
+/** Magic Hour — مزوّد فيديو ثانٍ بمفتاح مجاني بلا بطاقة:
+ * POST https://api.magichour.ai/v1/text-to-video (Bearer، جسم JSON فيه
+ * model وstyle.prompt وend_seconds وaspect_ratio وresolution)، فيرد
+ * id وcredits_charged، ثم GET /v1/video-projects/{id} حتى complete
+ * (أو error/canceled)، ثم تنزيل downloads[0].url — رابط موقّع يُنزَّل
+ * بلا ترويسة Authorization، وينتهي خلال ~24 ساعة.
+ * الرصيد المجاني محدود (400 عند التسجيل + 100 يومياً حتى 7 مرات،
+ * أي نحو 15 مقطعاً قصيراً 480p إجمالاً) — يُعرض ذلك في الواجهة.
+ * نماذج الباقة المجانية: wan-2.2 و ltx-2.5 و minimax-h3 (480p). */
+object MagicHourClient {
+    const val BASE = "https://api.magichour.ai"
+    val FREE_MODELS = listOf("wan-2.2", "ltx-2.5", "minimax-h3")
+
+    /** يرسل توليد مقطع ويعيد معرّف المشروع (أو خطأ، ومنه 402 عند نفاد الرصيد). */
+    suspend fun submitTextToVideo(prompt: String, model: String, durationSec: Int, key: String): Result<String> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val body = JSONObject()
+                    .put("model", model)
+                    .put("style", JSONObject().put("prompt", prompt))
+                    .put("end_seconds", durationSec)
+                    .put("aspect_ratio", "16:9")
+                    .put("resolution", "480p")
+                val conn = (URL("$BASE/v1/text-to-video").openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 20_000
+                    readTimeout = 60_000
+                    setRequestProperty("Authorization", "Bearer $key")
+                    setRequestProperty("Content-Type", "application/json")
+                    doOutput = true
+                }
+                conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+                val code = conn.responseCode
+                val raw = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                    ?.bufferedReader()?.use { it.readText() } ?: ""
+                if (code == 402) error("انتهى الرصيد المجاني (402)")
+                if (code !in 200..299) error("$code: ${raw.take(200)}")
+                val id = JSONObject(raw).optString("id")
+                if (id.isBlank()) error("رد بلا معرّف مشروع") else id
+            }
+        }
+
+    /** حالة مشروع: (الحالة، رابط التنزيل عند الاكتمال أو null).
+     * الحالات: draft / queued / rendering / complete / error / canceled. */
+    suspend fun projectStatus(projectId: String, key: String): Result<Pair<String, String?>> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val conn = (URL("$BASE/v1/video-projects/$projectId").openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 20_000
+                    readTimeout = 30_000
+                    setRequestProperty("Authorization", "Bearer $key")
+                }
+                val code = conn.responseCode
+                val raw = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                    ?.bufferedReader()?.use { it.readText() } ?: ""
+                if (code !in 200..299) error("$code: ${raw.take(200)}")
+                val j = JSONObject(raw)
+                val status = j.optString("status")
+                val url = j.optJSONArray("downloads")?.let { arr ->
+                    if (arr.length() > 0) arr.getJSONObject(0).optString("url") else null
+                }
+                status to url?.ifBlank { null }
+            }
+        }
+
+    /** ينزّل رابطاً موقّعاً (بلا ترويسة Authorization) إلى target. */
+    suspend fun downloadUrl(url: String, target: File): Result<File> = withContext(Dispatchers.IO) {
+        runCatching {
+            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 20_000
+                readTimeout = 180_000
+            }
+            val code = conn.responseCode
+            if (code !in 200..299) error("$code")
+            conn.inputStream?.use { input -> target.outputStream().use { out -> input.copyTo(out) } }
+            target
+        }
+    }
+}
+
 /** مفتاح Pollinations للفيديو: يُحفظ مشفّراً بـ Keystore عبر SecretStore. */
 class VideoGenConfig(private val st: Storage) {
     var apiKey by mutableStateOf(SecretStore.decrypt(st.setting("videogen_key", "")))
+    var magicHourKey by mutableStateOf(SecretStore.decrypt(st.setting("magichour_key", "")))
 
     fun save() {
         st.saveSetting("videogen_key", SecretStore.encrypt(apiKey.trim()))
+        st.saveSetting("magichour_key", SecretStore.encrypt(magicHourKey.trim()))
     }
 }

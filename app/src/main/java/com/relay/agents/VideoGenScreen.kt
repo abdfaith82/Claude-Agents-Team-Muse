@@ -46,6 +46,7 @@ private data class SceneState(
     val agentName: String = "",
     val visualPrompt: String = "",
     val videoModel: String = "",
+    val provider: String = "pollinations",
     val jobId: String = "",
     val videoFile: File? = null,
     val status: SceneStatus = SceneStatus.IDLE,
@@ -79,6 +80,9 @@ fun VideoGenTab(vm: RelayViewModel) {
     val storage = remember { Storage(ctx) }
     val cfg = remember { VideoGenConfig(storage) }
     var apiKey by remember { mutableStateOf(cfg.apiKey) }
+    var magicKey by remember { mutableStateOf(cfg.magicHourKey) }
+    var provider by remember { mutableStateOf("pollinations") }
+    var mhSelected by remember { mutableStateOf(setOf("ltx-2.5")) }
     var longText by remember { mutableStateOf("") }
     var durationSec by remember { mutableStateOf(5) }
     var videoModels by remember { mutableStateOf<List<VideoGenClient.VideoModel>>(emptyList()) }
@@ -111,20 +115,41 @@ fun VideoGenTab(vm: RelayViewModel) {
             delay(5000)
             val s = scenes.getOrNull(i) ?: return
             if (s.status != SceneStatus.VIDEO || s.jobId.isBlank()) return
-            VideoGenClient.jobStatus(s.jobId, cfg.apiKey)
-                .onSuccess { st ->
-                    when (st) {
-                        "succeeded" -> {
-                            val target = File(ctx.cacheDir, "videogen-${s.index}-${System.currentTimeMillis()}.mp4")
-                            VideoGenClient.downloadResult(s.jobId, cfg.apiKey, target)
-                                .onSuccess { updateScene(i) { it.copy(status = SceneStatus.READY, videoFile = target) } }
-                                .onFailure { err -> updateScene(i) { it.copy(status = SceneStatus.FAILED, error = err.message?.take(160) ?: "") } }
+            if (s.provider == "magic") {
+                MagicHourClient.projectStatus(s.jobId, cfg.magicHourKey)
+                    .onSuccess { (st, url) ->
+                        when (st) {
+                            "complete" -> {
+                                if (url.isNullOrBlank()) {
+                                    updateScene(i) { it.copy(status = SceneStatus.FAILED, error = "complete بلا رابط تنزيل") }
+                                } else {
+                                    val target = File(ctx.cacheDir, "videogen-${s.index}-${System.currentTimeMillis()}.mp4")
+                                    MagicHourClient.downloadUrl(url, target)
+                                        .onSuccess { updateScene(i) { it.copy(status = SceneStatus.READY, videoFile = target) } }
+                                        .onFailure { err -> updateScene(i) { it.copy(status = SceneStatus.FAILED, error = err.message?.take(160) ?: "") } }
+                                }
+                            }
+                            "error", "canceled" -> updateScene(i) { it.copy(status = SceneStatus.FAILED, error = st) }
+                            else -> Unit
                         }
-                        "failed", "cancelled" -> updateScene(i) { it.copy(status = SceneStatus.FAILED, error = st) }
-                        else -> Unit
                     }
-                }
-                .onFailure { /* عابر — نكمل الاستعلام */ }
+                    .onFailure { /* عابر — نكمل الاستعلام */ }
+            } else {
+                VideoGenClient.jobStatus(s.jobId, cfg.apiKey)
+                    .onSuccess { st ->
+                        when (st) {
+                            "succeeded" -> {
+                                val target = File(ctx.cacheDir, "videogen-${s.index}-${System.currentTimeMillis()}.mp4")
+                                VideoGenClient.downloadResult(s.jobId, cfg.apiKey, target)
+                                    .onSuccess { updateScene(i) { it.copy(status = SceneStatus.READY, videoFile = target) } }
+                                    .onFailure { err -> updateScene(i) { it.copy(status = SceneStatus.FAILED, error = err.message?.take(160) ?: "") } }
+                            }
+                            "failed", "cancelled" -> updateScene(i) { it.copy(status = SceneStatus.FAILED, error = st) }
+                            else -> Unit
+                        }
+                    }
+                    .onFailure { /* عابر — نكمل الاستعلام */ }
+            }
         }
         if (scenes.getOrNull(i)?.status == SceneStatus.VIDEO) {
             updateScene(i) { it.copy(status = SceneStatus.FAILED, error = tr("انتهت مهلة الانتظار")) }
@@ -168,10 +193,23 @@ fun VideoGenTab(vm: RelayViewModel) {
     suspend fun submitScene(i: Int) {
         val s = scenes.getOrNull(i) ?: return
         if (s.visualPrompt.isBlank()) return
+        if (provider == "magic") {
+            val models = mhSelected.toList()
+            if (models.isEmpty()) return
+            val model = models[i % models.size]
+            updateScene(i) { it.copy(status = SceneStatus.VIDEO, videoModel = model, provider = "magic", error = "", jobId = "") }
+            MagicHourClient.submitTextToVideo(s.visualPrompt, model, durationSec, cfg.magicHourKey)
+                .onSuccess { id ->
+                    updateScene(i) { it.copy(jobId = id) }
+                    pollScene(i, 15 * 60 * 1000)
+                }
+                .onFailure { err -> updateScene(i) { it.copy(status = SceneStatus.FAILED, error = err.message?.take(160) ?: "") } }
+            return
+        }
         val models = selected.toList()
         if (models.isEmpty()) return
         val model = models[i % models.size]
-        updateScene(i) { it.copy(status = SceneStatus.VIDEO, videoModel = model, error = "", jobId = "") }
+        updateScene(i) { it.copy(status = SceneStatus.VIDEO, videoModel = model, provider = "pollinations", error = "", jobId = "") }
         when (val r = VideoGenClient.submitVideo(s.visualPrompt, model, durationSec, cfg.apiKey, ctx.cacheDir)) {
             is VideoGenClient.SubmitResult.Started -> {
                 updateScene(i) { it.copy(jobId = r.jobId) }
@@ -184,13 +222,24 @@ fun VideoGenTab(vm: RelayViewModel) {
 
     /** المرحلة 2: كل مقطع يولّده نموذج فيديو مختلف بالتناوب مع غيره. */
     fun generateAll() {
-        if (cfg.apiKey.isBlank()) {
-            msg = tr("الفيديو يحتاج مفتاح Pollinations: أنشئ مفتاحاً مجانياً من enter.pollinations.ai، والاستخدام يُحسب برصيد pollen ويمكن زيادته مجاناً عبر Quests.")
-            return
-        }
-        if (selected.isEmpty()) {
-            msg = tr("اختر نموذج فيديو واحداً على الأقل")
-            return
+        if (provider == "magic") {
+            if (cfg.magicHourKey.isBlank()) {
+                msg = tr("الفيديو يحتاج مفتاح Magic Hour: أنشئ مفتاحاً مجانياً بلا بطاقة من magichour.ai/developer — رصيده المجاني محدود (نحو 15 مقطعاً قصيراً).")
+                return
+            }
+            if (mhSelected.isEmpty()) {
+                msg = tr("اختر نموذج فيديو واحداً على الأقل")
+                return
+            }
+        } else {
+            if (cfg.apiKey.isBlank()) {
+                msg = tr("الفيديو يحتاج مفتاح Pollinations: أنشئ مفتاحاً مجانياً من enter.pollinations.ai، والاستخدام يُحسب برصيد pollen ويمكن زيادته مجاناً عبر Quests.")
+                return
+            }
+            if (selected.isEmpty()) {
+                msg = tr("اختر نموذج فيديو واحداً على الأقل")
+                return
+            }
         }
         val ready = scenes.mapIndexedNotNull { i, s ->
             if (s.visualPrompt.isNotBlank() && s.status != SceneStatus.READY) i else null
@@ -233,6 +282,23 @@ fun VideoGenTab(vm: RelayViewModel) {
             )
         }
         item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    magicKey, { magicKey = it },
+                    label = { Text(tr("مفتاح Magic Hour")) },
+                    modifier = Modifier.weight(1f), singleLine = true,
+                    visualTransformation = PasswordVisualTransformation()
+                )
+                Button(onClick = { cfg.magicHourKey = magicKey; cfg.save(); msg = tr("تم حفظ المفتاح") }) {
+                    Text(tr("حفظ"))
+                }
+            }
+            Text(
+                tr("مجاني: نحو 15 مقطعاً قصيراً (480p) من رصيد التسجيل، ثم يتوقف حتى تشتري رصيداً. مفتاح مجاني بلا بطاقة من magichour.ai/developer."),
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+        item {
             OutlinedTextField(
                 longText, { longText = it },
                 label = { Text(tr("النص الطويل")) },
@@ -251,17 +317,35 @@ fun VideoGenTab(vm: RelayViewModel) {
             }
         }
         item {
-            Text(tr("نماذج الفيديو (يشارك أكثر من نموذج بالتناوب)"), style = MaterialTheme.typography.bodySmall)
-            if (videoModels.isEmpty()) {
-                Text(tr("جارٍ الجلب…"), style = MaterialTheme.typography.bodySmall)
-            } else {
+            Text(tr("مزود الفيديو"), style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FilterChip(selected = provider == "pollinations", onClick = { provider = "pollinations" }, label = { Text("Pollinations") })
+                FilterChip(selected = provider == "magic", onClick = { provider = "magic" }, label = { Text("Magic Hour") })
+            }
+            if (provider == "magic") {
+                Text(tr("نماذج Magic Hour المجانية (480p)"), style = MaterialTheme.typography.bodySmall)
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    videoModels.take(30).forEach { m ->
+                    MagicHourClient.FREE_MODELS.forEach { m ->
                         FilterChip(
-                            selected = selected.contains(m.id),
-                            onClick = { selected = if (selected.contains(m.id)) selected - m.id else selected + m.id },
-                            label = { Text(if (m.price.isBlank()) m.id else "${m.id} (${m.price})") }
+                            selected = mhSelected.contains(m),
+                            onClick = { mhSelected = if (mhSelected.contains(m)) mhSelected - m else mhSelected + m },
+                            label = { Text(m) }
                         )
+                    }
+                }
+            } else {
+                Text(tr("نماذج الفيديو (يشارك أكثر من نموذج بالتناوب)"), style = MaterialTheme.typography.bodySmall)
+                if (videoModels.isEmpty()) {
+                    Text(tr("جارٍ الجلب…"), style = MaterialTheme.typography.bodySmall)
+                } else {
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        videoModels.take(30).forEach { m ->
+                            FilterChip(
+                                selected = selected.contains(m.id),
+                                onClick = { selected = if (selected.contains(m.id)) selected - m.id else selected + m.id },
+                                label = { Text(if (m.price.isBlank()) m.id else "${m.id} (${m.price})") }
+                            )
+                        }
                     }
                 }
             }

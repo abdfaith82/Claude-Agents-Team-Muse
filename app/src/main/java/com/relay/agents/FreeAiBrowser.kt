@@ -104,7 +104,14 @@ private fun freeSitesList() = listOf(
         FreeSite("metaai", "Meta AI", "https://meta.ai", tr("من ميتا — مجاني بلا خطة مدفوعة، ويعمل بحساب ميتا.")),
         FreeSite("mistral", "Mistral", "https://chat.mistral.ai", tr("أوروبي (Le Chat) — مجاني بحد يومي، وبياناته في أوروبا.")),
         FreeSite("grok", "Grok", "https://grok.com", tr("من xAI — أخبار لحظية من منصة X، مجاني بحد محدود.")),
-        FreeSite("muse", "Muse", "https://muse.ai", tr("حسابك مسجل فيه — مجاني، لكن توفره حسب بلدك وقد يطلب انتظاراً."))
+        FreeSite("muse", "Muse", "https://muse.ai", tr("حسابك مسجل فيه — مجاني، لكن توفره حسب بلدك وقد يطلب انتظاراً.")),
+        // مواقع توليد فيديو مجانية (ويب فقط، بلا API — تُفتح في تبويب مستقل
+        // وتولّد فيها بنفسك بعد تسجيل الدخول بحسابك المجاني).
+        FreeSite("flow", "Google Flow", "https://flow.google.com", tr("من جوجل (Veo 3.1) — 50 رصيداً مجانياً كل يوم، نحو 5 مقاطع 720p يومياً، بلا بطاقة. لا API له — استخدمه من المتصفح هنا.")),
+        FreeSite("dreamina", "Dreamina", "https://dreamina.capcut.com", tr("من CapCut — نحو 120 رصيداً مجانياً كل يوم، مقاطع حتى 30 ثانية بعلامة مائية.")),
+        FreeSite("pixverse", "PixVerse", "https://pixverse.ai", tr("60 رصيداً عند التسجيل + 30 كل يوم، حتى 540p بعلامة مائية.")),
+        FreeSite("kling", "Kling", "https://kling.ai", tr("جودة حركة قوية — رصيد مجاني شهري عند تسجيل الدخول (المقدار غير معلن)، بعلامة مائية.")),
+        FreeSite("haiper", "Haiper", "https://haiper.ai", tr("300 رصيد بداية، حتى 720p و8 ثوانٍ، بعلامة مائية."))
     )
 
 /** جلسة محفوظة: اسم + معرّفات النماذج المختارة + وقت الحفظ.
