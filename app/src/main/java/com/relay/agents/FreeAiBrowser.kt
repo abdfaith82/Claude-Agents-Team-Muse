@@ -325,7 +325,7 @@ private fun FreeModelsPager(sites: List<FreeSite>, initialPage: Int, vm: RelayVi
             style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp)
         )
         HorizontalPager(state = pagerState, modifier = Modifier.fillMaxWidth().weight(1f)) { page ->
-            FreeBrowserPanel(sites[page], vm)
+            FreeBrowserPanel(sites[page], vm, active = pagerState.currentPage == page)
         }
     }
 }
@@ -346,7 +346,12 @@ private fun FreeBrowserView(site: FreeSite, vm: RelayViewModel, onBack: () -> Un
  * النموذج، ومرة لكل صفحة في عرض النماذج المختارة، فلكل صفحة تبويباتها وجلسة
  * تسجيل دخولها المستقلة عن الصفحات الأخرى. */
 @Composable
-private fun FreeBrowserPanel(site: FreeSite, vm: RelayViewModel) {
+/**
+ * لوحة متصفح نموذج واحد. المعامل active يعني أن هذه الصفحة هي الظاهرة
+ * حالياً في الـ Pager؛ الجلسات غير الظاهرة تُعلَّق (setActive(false))
+ * فيتوقف فيديوها ومؤقتاتها، فيخفّ المتصفح وتختفي الحركة غير الطبيعية.
+ */
+private fun FreeBrowserPanel(site: FreeSite, vm: RelayViewModel, active: Boolean = true) {
     val ctx = LocalContext.current
     // رفع الملفات من الهاتف: منتقي أندرويد يسلّم الملفات المختارة إلى
     // جسر Gecko (FilePickerBridge) فيُنسخ إلى cacheDir وتُسلَّم للصفحة —
@@ -496,8 +501,14 @@ private fun FreeBrowserPanel(site: FreeSite, vm: RelayViewModel) {
             var ready by remember(tab.id) { mutableStateOf(tab.session.isOpen) }
             LaunchedEffect(tab.id) {
                 while (!tab.session.isOpen) delay(50)
-                tab.session.setActive(true)
                 ready = true
+            }
+            // تفعيل جلسة الصفحة الظاهرة فقط: التبويب المختار في النموذج
+            // الظاهر يُفعَّل، وكل الجلسات الأخرى في النموذج (التبويبات
+            // الأخرى) والنماذج غير الظاهرة تُعلَّق، فيتوقف فيديوها
+            // ومؤقتاتها ويخفّ المتصفح.
+            LaunchedEffect(active, tab.id, ready) {
+                if (ready) spaceTabs.forEach { t -> t.session.setActive(active && t.id == tab.id) }
             }
             if (ready) {
                 key(tab.id) {
@@ -608,7 +619,7 @@ private fun PickedModelsView(sites: List<FreeSite>, picked: List<Int>, vm: Relay
                     style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
                 )
                 HorizontalPager(state = pagerState, modifier = Modifier.fillMaxWidth().weight(1f)) { page ->
-                    FreeBrowserPanel(sites[picked[page]], vm)
+                    FreeBrowserPanel(sites[picked[page]], vm, active = pagerState.currentPage == page)
                 }
             }
         }

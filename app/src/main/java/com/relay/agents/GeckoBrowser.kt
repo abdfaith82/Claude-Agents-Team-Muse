@@ -525,8 +525,12 @@ fun GeckoBrowserTab(vm: RelayViewModel, gh: GhConfig) {
             var ready by remember(tab.id) { mutableStateOf(tab.session.isOpen) }
             LaunchedEffect(tab.id) {
                 while (!tab.session.isOpen) delay(50)
-                tab.session.setActive(true)
                 ready = true
+            }
+            // تفعيل التبويب المختار فقط؛ باقي تبويبات GitHub تُعلَّق
+            // فيتوقف فيديوها ومؤقتاتها ويخفّ المتصفح.
+            LaunchedEffect(tab.id, ready) {
+                if (ready) spaceTabs.forEach { t -> t.session.setActive(t.id == tab.id) }
             }
             if (ready) {
                 key(tab.id) {
