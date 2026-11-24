@@ -3,7 +3,11 @@ package com.relay.agents
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.speech.tts.TextToSpeech
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -41,7 +45,9 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
@@ -58,7 +64,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
 import org.mozilla.geckoview.GeckoView
+import java.util.Locale
 
 private data class FreeSite(val id: String, val name: String, val url: String, val desc: String)
 
@@ -98,19 +107,82 @@ private fun freeSitesList() = listOf(
         FreeSite("muse", "Muse", "https://muse.ai", tr("حسابك مسجل فيه — مجاني، لكن توفره حسب بلدك وقد يطلب انتظاراً."))
     )
 
-/** الجلسات المحفوظة: معرّفات النماذج المختارة آخر مرة، تُحفظ تلقائياً
- * في SharedPreferences عند كل فتح، وتُستعاد عند العودة — فتبقى الجلسة
- * (وتبويباتها المحفوظة أصلاً في BrowserHub) متاحة للرجوع إليها في أي وقت. */
+/** جلسة محفوظة: اسم + معرّفات النماذج المختارة + وقت الحفظ.
+ * تُخزَّن كل الجلسات في JSON واحد في SharedPreferences، فيمكن حفظ عدة
+ * جلسات مسماة (جلسة 1، جلسة 2...) والتبديل بينها. المجموعة المفتوحة
+ * حالياً تُحفظ أيضاً في المفتاح القديم free_picked_ids، فتعود آخر مجموعة
+ * فُتحت حتى لو لم تُحفَظ كجلسة مسماة. الجلسة الوحيدة القديمة تُهاجَر
+ * إلى جلسة باسم «آخر الجلسات» عند أول تحميل. تبويبات Gecko نفسها
+ * محفوظة أصلاً في BrowserHub وتُستعاد مع الجلسة. */
+data class SavedSession(val id: String, val name: String, val modelIds: List<String>, val savedAt: Long)
+
 object PickedModelsStore {
     val pickedIds = mutableStateListOf<String>()
-    private const val KEY = "free_picked_ids"
+    val sessions = mutableStateListOf<SavedSession>()
+    val currentId = mutableStateOf<String?>(null)
+    private const val KEY = "free_sessions_json"
+    private const val OLD_KEY = "free_picked_ids"
+
     fun load(ctx: Context) {
-        val ids = Storage(ctx).setting(KEY, "").split(",").map { it.trim() }.filter { it.isNotEmpty() }
-        pickedIds.clear()
-        pickedIds.addAll(ids)
+        val st = Storage(ctx)
+        sessions.clear()
+        runCatching {
+            val arr = JSONArray(st.setting(KEY, "[]"))
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val ids = o.optString("ids", "").split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                if (ids.isNotEmpty()) sessions.add(SavedSession(o.optString("id", "s$i"), o.optString("name", "جلسة"), ids, o.optLong("at", 0L)))
+            }
+        }
+        // تهجير الجلسة الوحيدة القديمة إن وُجدت ولا توجد جلسات جديدة.
+        if (sessions.isEmpty()) {
+            val old = st.setting(OLD_KEY, "").split(",").map { it.trim() }.filter { it.isNotEmpty() }
+            if (old.isNotEmpty()) sessions.add(SavedSession("legacy", "آخر الجلسات", old, 0L))
+        }
+        sessions.sortByDescending { it.savedAt }
+        // المجموعة المفتوحة حالياً: آخر مجموعة فُتحت، وإلا أول جلسة محفوظة.
+        if (pickedIds.isEmpty()) {
+            val last = st.setting(OLD_KEY, "").split(",").map { it.trim() }.filter { it.isNotEmpty() }
+            if (last.isNotEmpty()) {
+                pickedIds.addAll(last)
+                currentId.value = sessions.firstOrNull { it.modelIds == last }?.id
+            } else {
+                sessions.firstOrNull()?.let { pickedIds.addAll(it.modelIds); currentId.value = it.id }
+            }
+        }
+        save(ctx)
     }
+
     fun save(ctx: Context) {
-        Storage(ctx).saveSetting(KEY, pickedIds.joinToString(","))
+        val arr = JSONArray()
+        sessions.forEach { s ->
+            arr.put(JSONObject().put("id", s.id).put("name", s.name).put("ids", s.modelIds.joinToString(",")).put("at", s.savedAt))
+        }
+        val st = Storage(ctx)
+        st.saveSetting(KEY, arr.toString())
+        st.saveSetting(OLD_KEY, pickedIds.joinToString(","))
+    }
+
+    /** حفظ الجلسة المفتوحة حالياً كجلسة جديدة مسماة (جلسة 1، جلسة 2...). */
+    fun saveCurrent(ctx: Context, modelIds: List<String>): SavedSession {
+        val s = SavedSession("s" + System.currentTimeMillis(), "جلسة " + (sessions.size + 1), modelIds, System.currentTimeMillis())
+        sessions.add(0, s)
+        currentId.value = s.id
+        save(ctx)
+        return s
+    }
+
+    /** فتح جلسة محفوظة: تصبح هي المجموعة المختارة الحالية. */
+    fun openSession(ctx: Context, s: SavedSession) {
+        pickedIds.clear(); pickedIds.addAll(s.modelIds)
+        currentId.value = s.id
+        save(ctx)
+    }
+
+    fun deleteSession(ctx: Context, id: String) {
+        sessions.removeAll { it.id == id }
+        if (currentId.value == id) currentId.value = sessions.firstOrNull()?.id
+        save(ctx)
     }
 }
 
@@ -146,23 +218,31 @@ fun FreeAiTab(vm: RelayViewModel, onOpenPicked: () -> Unit) {
                     BrowserHub.init(ctx, picked.url, sp)
                     if (BrowserHub.tabs.none { it.space == sp }) BrowserHub.newTabForSpace(ctx, sp, picked.url)
                 }
-                // حفظ تلقائي للجلسة ثم فتحها في صفحتها المنفصلة (الوجهة 23).
+                // حفظ تلقائي للمجموعة المفتوحة ثم فتحها في صفحتها المنفصلة (الوجهة 23).
+                // (تبقى مجموعة بلا اسم حتى يحفظها المستخدم كجلسة مسماة من زر «حفظ الجلسة».)
                 PickedModelsStore.pickedIds.clear()
                 PickedModelsStore.pickedIds.addAll(tabPick.map { sites[it].id })
+                PickedModelsStore.currentId.value = null
                 PickedModelsStore.save(ctx)
                 onOpenPicked()
             }, modifier = Modifier.fillMaxWidth()) { Text(tr("عرض النماذج المختارة")) }
         }
-        // الجلسات المحفوظة: زر للعودة لآخر جلسة في أي وقت (الحفظ تلقائي).
-        if (!picking && PickedModelsStore.pickedIds.isNotEmpty()) {
+        // الجلسات المحفوظة: عدة جلسات مسماة — افتح أياً منها أو احذفها.
+        if (!picking && PickedModelsStore.sessions.isNotEmpty()) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(tr("الجلسات المحفوظة"), style = MaterialTheme.typography.titleSmall)
-                Text(
-                    PickedModelsStore.pickedIds.mapNotNull { id -> sites.firstOrNull { it.id == id }?.name }.joinToString("، "),
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Button(onClick = { onOpenPicked() }, modifier = Modifier.fillMaxWidth()) {
-                    Text(tr("العودة لآخر الجلسات"))
+                PickedModelsStore.sessions.forEach { s ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            s.name + " — " + s.modelIds.mapNotNull { id -> sites.firstOrNull { it.id == id }?.name }.joinToString("، "),
+                            style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = {
+                            PickedModelsStore.openSession(ctx, s)
+                            onOpenPicked()
+                        }) { Text(tr("فتح")) }
+                        TextButton(onClick = { PickedModelsStore.deleteSession(ctx, s.id) }) { Text("✕") }
+                    }
                 }
                 Text(tr("تُحفظ جلساتك تلقائياً — أغلق التطبيق وارجع وقتما تشاء."), style = MaterialTheme.typography.bodySmall)
             }
@@ -261,6 +341,20 @@ private fun FreeBrowserView(site: FreeSite, vm: RelayViewModel, onBack: () -> Un
 @Composable
 private fun FreeBrowserPanel(site: FreeSite, vm: RelayViewModel) {
     val ctx = LocalContext.current
+    // رفع الملفات من الهاتف: منتقي أندرويد يسلّم الملفات المختارة إلى
+    // جسر Gecko (FilePickerBridge) فيُنسخ إلى cacheDir وتُسلَّم للصفحة —
+    // فيعمل زر الرفع داخل مواقع الذكاء الاصطناعي (ChatGPT وClaude وغيرهما).
+    val singlePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        deliverPickedFiles(ctx, uri?.let { listOf(it) })
+    }
+    val multiPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+        deliverPickedFiles(ctx, uris)
+    }
+    SideEffect {
+        FilePickerBridge.launchPicker = { mime, multiple ->
+            if (multiple) multiPicker.launch(mime) else singlePicker.launch(mime)
+        }
+    }
     val space = "free:${site.id}"
     remember { BrowserHub.init(ctx, site.url, space); true }
     val spaceTabs = BrowserHub.tabs.filter { it.space == space }
@@ -284,6 +378,25 @@ private fun FreeBrowserPanel(site: FreeSite, vm: RelayViewModel) {
             sumAnswer = if (snap == null) tr("تعذّر قراءة الصفحة. انتظر اكتمال التحميل ثم أعد المحاولة (الجسر لا يعمل على صفحات about: وبعض الصفحات المحمية).")
             else vm.askAboutPage(q, snapshotToPrompt(snap))
             sumBusy = false
+        }
+    }
+    // الصوت: قراءة الملخص بصوت عالٍ عبر تحويل النص إلى كلام (TTS) المدمج
+    // في أندرويد — بلا مفتاح وبلا إنترنت إن كانت حزمة الصوت العربية مثبّتة.
+    var tts by remember { mutableStateOf<TextToSpeech?>(null) }
+    DisposableEffect(Unit) { onDispose { tts?.stop(); tts?.shutdown() } }
+    fun speakSummary() {
+        val text = sumAnswer
+        if (text.isBlank()) return
+        val existing = tts
+        if (existing != null) {
+            existing.speak(text, TextToSpeech.QUEUE_FLUSH, null, "summary")
+        } else {
+            tts = TextToSpeech(ctx) { status ->
+                if (status == TextToSpeech.SUCCESS) {
+                    tts?.language = Locale("ar")
+                    tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "summary")
+                }
+            }
         }
     }
 
@@ -343,6 +456,24 @@ private fun FreeBrowserPanel(site: FreeSite, vm: RelayViewModel) {
                         DropdownMenuItem(text = { Text(tr("تلخيص هذه الصفحة")) }, onClick = {
                             moreMenu = false; sumOpen = true; askSum(tr("لخّص هذه الصفحة بإيجاز."))
                         })
+                        // تصدير نتيجة المحادثة: نص الصفحة الحالية عبر مشاركة أندرويد
+                        // (احفظه كملف نصي أو أرسله لأي تطبيق) — يقرأ فقط، ولا ينفّذ شيئاً.
+                        DropdownMenuItem(text = { Text(tr("تصدير نتيجة المحادثة")) }, onClick = {
+                            moreMenu = false
+                            scope.launch {
+                                val snap = tab.snapshot()
+                                if (snap == null) {
+                                    Toast.makeText(ctx, tr("تعذّر قراءة الصفحة. انتظر اكتمال التحميل ثم أعد المحاولة (الجسر لا يعمل على صفحات about: وبعض الصفحات المحمية)."), Toast.LENGTH_LONG).show()
+                                } else {
+                                    val send = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_SUBJECT, tab.title.ifBlank { site.name })
+                                        putExtra(Intent.EXTRA_TEXT, snapshotToPrompt(snap))
+                                    }
+                                    runCatching { ctx.startActivity(Intent.createChooser(send, tr("تصدير نتيجة المحادثة")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                                }
+                            }
+                        })
                         DropdownMenuItem(text = { Text(tr("فتح في المتصفح الخارجي")) }, onClick = {
                             moreMenu = false
                             runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(tab.url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
@@ -397,7 +528,10 @@ private fun FreeBrowserPanel(site: FreeSite, vm: RelayViewModel) {
                     OutlinedTextField(sumQuestion, { sumQuestion = it }, label = { Text(tr("سؤالك عن الصفحة")) }, modifier = Modifier.fillMaxWidth())
                     Button(enabled = !sumBusy && sumQuestion.isNotBlank(), onClick = { askSum(sumQuestion) }) { Text(tr("اسأل")) }
                     if (sumBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
-                    if (sumAnswer.isNotEmpty()) Text(sumAnswer, style = MaterialTheme.typography.bodyMedium)
+                    if (sumAnswer.isNotEmpty()) {
+                        Text(sumAnswer, style = MaterialTheme.typography.bodyMedium)
+                        AssistChip(onClick = { speakSummary() }, label = { Text(tr("استمع للملخص")) }, enabled = !sumBusy)
+                    }
                 }
             }
         )
@@ -411,28 +545,65 @@ private fun FreeBrowserPanel(site: FreeSite, vm: RelayViewModel) {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PickedModelsView(sites: List<FreeSite>, picked: List<Int>, vm: RelayViewModel, onBack: () -> Unit) {
-    val pagerState = rememberPagerState { picked.size }
+    val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
+    var sessionsMenu by remember { mutableStateOf(false) }
+    // مفتاح الجلسة المفتوحة: يتبدّل فقط عند التبديل بين الجلسات المحفوظة،
+    // فيُعاد إنشاء شريط التبويبات والمتصفح من الصفحة الأولى.
+    var sessionKey by remember { mutableStateOf(PickedModelsStore.currentId.value ?: "none") }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack) { Text(tr("رجوع")) }
             Text(tr("النماذج المختارة"), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-        }
-        ScrollableTabRow(selectedTabIndex = pagerState.currentPage, edgePadding = 0.dp) {
-            picked.forEachIndexed { i, idx ->
-                Tab(
-                    selected = pagerState.currentPage == i,
-                    onClick = { scope.launch { pagerState.scrollToPage(i) } },
-                    text = { Text(sites[idx].name) }
-                )
+            // حفظ الجلسة المفتوحة كجلسة جديدة مسماة (يمكن حفظ عدة جلسات).
+            TextButton(onClick = {
+                val s = PickedModelsStore.saveCurrent(ctx, picked.map { sites[it].id })
+                Toast.makeText(ctx, tr("تم حفظ الجلسة") + ": " + s.name, Toast.LENGTH_SHORT).show()
+            }) { Text(tr("حفظ الجلسة")) }
+            // التبديل بين الجلسات المحفوظة من داخل الصفحة.
+            Box {
+                TextButton(onClick = { sessionsMenu = true }) { Text(tr("الجلسات")) }
+                DropdownMenu(expanded = sessionsMenu, onDismissRequest = { sessionsMenu = false }) {
+                    if (PickedModelsStore.sessions.isEmpty()) {
+                        DropdownMenuItem(text = { Text(tr("لا توجد جلسات محفوظة بعد")) }, onClick = { sessionsMenu = false })
+                    }
+                    PickedModelsStore.sessions.forEach { s ->
+                        DropdownMenuItem(text = { Text(s.name + " — " + s.modelIds.mapNotNull { id -> sites.firstOrNull { it.id == id }?.name }.joinToString("، ")) }, onClick = {
+                            sessionsMenu = false
+                            // تأكد من وجود تبويب لكل نموذج في الجلسة قبل التبديل إليها.
+                            s.modelIds.forEach { id ->
+                                val st = sites.firstOrNull { it.id == id } ?: return@forEach
+                                val sp = "free:${st.id}"
+                                BrowserHub.init(ctx, st.url, sp)
+                                if (BrowserHub.tabs.none { it.space == sp }) BrowserHub.newTabForSpace(ctx, sp, st.url)
+                            }
+                            PickedModelsStore.openSession(ctx, s)
+                            sessionKey = s.id
+                        })
+                    }
+                }
             }
         }
-        Text(
-            tr("بدّل من التبويب العلوي أو اسحب يميناً ويساراً."),
-            style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
-        )
-        HorizontalPager(state = pagerState, modifier = Modifier.fillMaxWidth().weight(1f)) { page ->
-            FreeBrowserPanel(sites[picked[page]], vm)
+        key(sessionKey) {
+            val pagerState = rememberPagerState { picked.size }
+            Column(Modifier.fillMaxSize()) {
+                ScrollableTabRow(selectedTabIndex = pagerState.currentPage, edgePadding = 0.dp) {
+                    picked.forEachIndexed { i, idx ->
+                        Tab(
+                            selected = pagerState.currentPage == i,
+                            onClick = { scope.launch { pagerState.scrollToPage(i) } },
+                            text = { Text(sites[idx].name) }
+                        )
+                    }
+                }
+                Text(
+                    tr("بدّل من التبويب العلوي أو اسحب يميناً ويساراً."),
+                    style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                )
+                HorizontalPager(state = pagerState, modifier = Modifier.fillMaxWidth().weight(1f)) { page ->
+                    FreeBrowserPanel(sites[picked[page]], vm)
+                }
+            }
         }
     }
 }

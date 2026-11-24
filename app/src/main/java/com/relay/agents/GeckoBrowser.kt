@@ -13,6 +13,8 @@ import android.util.Log
 import android.webkit.URLUtil
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -42,6 +44,8 @@ import org.mozilla.geckoview.GeckoSessionSettings
 import org.mozilla.geckoview.GeckoView
 import org.mozilla.geckoview.WebExtension
 import org.mozilla.geckoview.WebResponse
+import java.io.File
+import java.io.FileOutputStream
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.thread
@@ -67,6 +71,9 @@ class BrowserTab(val id: String, val ctxId: String, startUrl: String, val env: S
     val session: GeckoSession = GeckoSession(
         GeckoSessionSettings.Builder().contextId(ctxId).build()
     ).also { s ->
+        // رفع الملفات من الهاتف: كل جلسة تحتاج مندوب طلبات (PromptDelegate)
+        // يعالج `<input type=file>`، وإلا يبقى زر الرفع في الصفحة ميتاً.
+        s.promptDelegate = FilePromptDelegate()
         s.contentDelegate = object : GeckoSession.ContentDelegate {
             override fun onTitleChange(session: GeckoSession, title: String?) { this@BrowserTab.title = title ?: "" }
             override fun onCloseRequest(session: GeckoSession) { BrowserHub.close(this@BrowserTab) }
@@ -113,6 +120,81 @@ class BrowserTab(val id: String, val ctxId: String, startUrl: String, val env: S
             pending.remove(id)
         }
     }
+}
+
+/** رفع الملفات من الهاتف داخل صفحات الويب: GeckoView لا يملك منتقي ملفات
+ * خاصاً به — زر `<input type=file>` يصل إلى PromptDelegate، وبدون معالجة
+ * يبقى الزر ميتاً. هذا الجسر يربط المندوب (خارج الـ Compose) بمنتقي
+ * أندرويد (داخل الـ Compose): عند طلب ملف يُفتح منتقي النظام، وعند
+ * الاختيار تُنسَخ الملفات إلى ملفات حقيقية في cacheDir (لأن `content://`
+ * لا يعطي مساراً حقيقياً لـ Gecko) ثم تُسلَّم للصفحة. */
+object FilePickerBridge {
+    var pendingResult: GeckoResult<GeckoSession.PromptDelegate.PromptResponse>? = null
+    var pendingPrompt: GeckoSession.PromptDelegate.FilePrompt? = null
+    var launchPicker: ((String, Boolean) -> Unit)? = null
+}
+
+private class FilePromptDelegate : GeckoSession.PromptDelegate {
+    override fun onFilePrompt(
+        session: GeckoSession,
+        prompt: GeckoSession.PromptDelegate.FilePrompt,
+    ): GeckoResult<GeckoSession.PromptDelegate.PromptResponse>? {
+        val result = GeckoResult<GeckoSession.PromptDelegate.PromptResponse>()
+        // طلب معلّق سابق لم يُكمل: ألغِه قبل استبداله.
+        FilePickerBridge.pendingResult?.let { old ->
+            FilePickerBridge.pendingPrompt?.let { p ->
+                if (!p.isComplete) runCatching { old.complete(p.dismiss()) }
+            }
+        }
+        FilePickerBridge.pendingResult = result
+        FilePickerBridge.pendingPrompt = prompt
+        val mime = prompt.mimeTypes?.firstOrNull { it.contains("/") } ?: "*/*"
+        val multiple = prompt.type == GeckoSession.PromptDelegate.FilePrompt.Type.MULTIPLE
+        val launcher = FilePickerBridge.launchPicker
+        if (launcher == null) {
+            runCatching { result.complete(prompt.dismiss()) }
+            FilePickerBridge.pendingResult = null
+            FilePickerBridge.pendingPrompt = null
+        } else {
+            launcher(mime, multiple)
+        }
+        return result
+    }
+}
+
+/** تسليم الملفات المختارة إلى الصفحة: نسخها إلى cacheDir على خيط خلفية
+ * (لأن `content://` لا يعطي مساراً)، ثم تأكيدها على الخيط الرئيسي.
+ * الإلغاء أو الفشل يلغي الطلب بهدوء دون تعطيل الصفحة. */
+fun deliverPickedFiles(ctx: Context, uris: List<Uri>?) {
+    val result = FilePickerBridge.pendingResult ?: return
+    val prompt = FilePickerBridge.pendingPrompt ?: return
+    FilePickerBridge.pendingResult = null
+    FilePickerBridge.pendingPrompt = null
+    if (uris.isNullOrEmpty() || prompt.isComplete) {
+        runCatching { result.complete(prompt.dismiss()) }
+        return
+    }
+    Thread {
+        val files = uris.mapNotNull { uri ->
+            runCatching {
+                val safe = (uri.lastPathSegment?.takeLast(20)?.replace(Regex("[^A-Za-z0-9._-]"), "_") ?: "file")
+                val out = File(ctx.cacheDir, "upload_" + System.currentTimeMillis() + "_" + safe)
+                ctx.contentResolver.openInputStream(uri)?.use { input ->
+                    FileOutputStream(out).use { output -> input.copyTo(output) }
+                }
+                Uri.fromFile(out)
+            }.getOrNull()
+        }
+        Handler(Looper.getMainLooper()).post {
+            if (files.isEmpty() || prompt.isComplete) {
+                runCatching { result.complete(prompt.dismiss()) }
+            } else if (prompt.type == GeckoSession.PromptDelegate.FilePrompt.Type.SINGLE) {
+                runCatching { result.complete(prompt.confirm(ctx, files.first())) }
+            } else {
+                runCatching { result.complete(prompt.confirm(ctx, files.toTypedArray())) }
+            }
+        }
+    }.start()
 }
 
 /** مركز المتصفح: محرك Gecko واحد للعملية، وقائمة التبويبات، وحفظها بين مرات التشغيل. */
@@ -344,6 +426,19 @@ internal fun snapshotToPrompt(s: JSONObject): String {
 @Composable
 fun GeckoBrowserTab(vm: RelayViewModel, gh: GhConfig) {
     val ctx = LocalContext.current
+    // رفع الملفات من الهاتف: منتقي أندرويد يسلّم الملفات المختارة إلى
+    // جسر Gecko (FilePickerBridge) فيُنسخ إلى cacheDir وتُسلَّم للصفحة.
+    val singlePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        deliverPickedFiles(ctx, uri?.let { listOf(it) })
+    }
+    val multiPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+        deliverPickedFiles(ctx, uris)
+    }
+    SideEffect {
+        FilePickerBridge.launchPicker = { mime, multiple ->
+            if (multiple) multiPicker.launch(mime) else singlePicker.launch(mime)
+        }
+    }
     val scope = rememberCoroutineScope()
     val base = "https://github.com/${gh.owner}/${gh.repo}"
     remember { BrowserHub.init(ctx, base); true }
