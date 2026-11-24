@@ -29,10 +29,14 @@ import java.util.UUID
  *   جسم الرد نفسه كملف. سجلات المهام تنتهي بعد 24 ساعة من اكتمالها.
  *
  * حدود صريحة (تحقّق حيّ في 2026-11-21):
- * - الفيديو والصور في Pollinations يحتاجان مفتاحاً (401 بلا مفتاح)؛
+ * - الفيديو في Pollinations يحتاج مفتاحاً (401 بلا مفتاح)؛
  *   المجهول فقط هو واجهة النص البسيطة. المفتاح نفسه مجاني من
  *   enter.pollinations.ai، والاستخدام يُحسب برصيد pollen، ويمكن
  *   زيادة الرصيد مجاناً عبر Quests في الحساب (بلا رقم ثابت أُثبت هنا).
+ * - الصور: النقطة القديمة image.pollinations.ai ما زالت ترد صوراً
+ *   بلا مفتاح (تحقّق حيّ في 2026-11-24)، أما النقطة الموثقة
+ *   gen.pollinations.ai/image فتحتاج المفتاح؛ عميل الصور يجرّب
+ *   القديمة أولاً ثم الموثقة بالمفتاح إن رُفض الطلب (401).
  * - كل مقطع بضع ثوانٍ حسب النموذج (بعض النماذج لها مدة ثابتة،
  *   فيرفض الخادم مدة غير مدعومة وتظهر رسالة الخطأ في المشهد).
  * - المقاطع تُحفظ في cacheDir بهواتف المستخدم فقط ولا تُرفع لأي مكان.
@@ -148,6 +152,46 @@ object VideoGenClient {
         }
 }
 
+/** توليد صورة إطار المشهد عبر Pollinations — بلا مفتاح في العادة:
+ * النقطة القديمة image.pollinations.ai/prompt/{prompt}?model=flux
+ * ترد صورة بلا مفتاح (تحقّق حيّ 2026-11-24)؛ إن ردّت 401 يُعاد
+ * الطلب على النقطة الموثقة gen.pollinations.ai/image بالمفتاح
+ * المحفوظ إن وُجد. الصورة 16:9 لتكون إطاراً أول للمقطع. */
+object PollinationsImage {
+    const val LEGACY_BASE = "https://image.pollinations.ai"
+    const val BASE = "https://gen.pollinations.ai"
+
+    suspend fun generateImage(prompt: String, cacheDir: File, key: String): Result<File> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val p = URLEncoder.encode(prompt, "UTF-8").replace("+", "%20")
+                val seed = (0..999999).random()
+                val file = File(cacheDir, "sceneimg-${UUID.randomUUID()}.jpg")
+                fun download(url: String, auth: String?): Int {
+                    val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 20_000
+                        readTimeout = 120_000
+                        auth?.let { setRequestProperty("Authorization", "Bearer $it") }
+                    }
+                    val code = conn.responseCode
+                    if (code in 200..299) {
+                        conn.inputStream?.use { input -> file.outputStream().use { out -> input.copyTo(out) } }
+                    }
+                    return code
+                }
+                val code = download("$LEGACY_BASE/prompt/$p?model=flux&width=768&height=432&seed=$seed", null)
+                if (code == 401 && key.isNotBlank()) {
+                    val code2 = download("$BASE/image/$p?model=flux&width=768&height=432&seed=$seed", key)
+                    if (code2 !in 200..299) error("$code2")
+                } else if (code !in 200..299) {
+                    error("$code")
+                }
+                if (!file.exists() || file.length() < 1024) error("صورة فارغة")
+                file
+            }
+        }
+}
+
 /** Magic Hour — مزوّد فيديو ثانٍ بمفتاح مجاني بلا بطاقة:
  * POST https://api.magichour.ai/v1/text-to-video (Bearer، جسم JSON فيه
  * model وstyle.prompt وend_seconds وaspect_ratio وresolution)، فيرد
@@ -156,22 +200,21 @@ object VideoGenClient {
  * بلا ترويسة Authorization، وينتهي خلال ~24 ساعة.
  * الرصيد المجاني محدود (400 عند التسجيل + 100 يومياً حتى 7 مرات،
  * أي نحو 15 مقطعاً قصيراً 480p إجمالاً) — يُعرض ذلك في الواجهة.
- * نماذج الباقة المجانية: wan-2.2 و ltx-2.5 و minimax-h3 (480p). */
+ * نماذج الباقة المجانية: wan-2.2 و ltx-2.5 و minimax-h3 (480p).
+ * السلسلة (صورة ← فيديو): تُرفع صورة الإطار أولاً عبر
+ * POST /v1/files/upload-urls ثم PUT على الرابط الموقّع، ثم
+ * POST /v1/image-to-video {end_seconds, model, resolution,
+ * style.prompt, assets.image_file_path} — تحقّق حيّ من
+ * openapi.json الرسمي في 2026-11-24. */
 object MagicHourClient {
     const val BASE = "https://api.magichour.ai"
     val FREE_MODELS = listOf("wan-2.2", "ltx-2.5", "minimax-h3")
 
-    /** يرسل توليد مقطع ويعيد معرّف المشروع (أو خطأ، ومنه 402 عند نفاد الرصيد). */
-    suspend fun submitTextToVideo(prompt: String, model: String, durationSec: Int, key: String): Result<String> =
+    /** يرسل طلب إنشاء مشروع فيديو (نص أو صورة) ويعيد معرّف المشروع. */
+    private suspend fun postProject(path: String, body: JSONObject, key: String): Result<String> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val body = JSONObject()
-                    .put("model", model)
-                    .put("style", JSONObject().put("prompt", prompt))
-                    .put("end_seconds", durationSec)
-                    .put("aspect_ratio", "16:9")
-                    .put("resolution", "480p")
-                val conn = (URL("$BASE/v1/text-to-video").openConnection() as HttpURLConnection).apply {
+                val conn = (URL("$BASE$path").openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"
                     connectTimeout = 20_000
                     readTimeout = 60_000
@@ -189,6 +232,80 @@ object MagicHourClient {
                 if (id.isBlank()) error("رد بلا معرّف مشروع") else id
             }
         }
+
+    /** يرسل توليد مقطع من نص ويعيد معرّف المشروع (أو خطأ، ومنه 402 عند نفاد الرصيد). */
+    suspend fun submitTextToVideo(prompt: String, model: String, durationSec: Int, key: String): Result<String> {
+        val body = JSONObject()
+            .put("model", model)
+            .put("style", JSONObject().put("prompt", prompt))
+            .put("end_seconds", durationSec)
+            .put("aspect_ratio", "16:9")
+            .put("resolution", "480p")
+        return postProject("/v1/text-to-video", body, key)
+    }
+
+    /** يرفع صورة محلية ويعيد مسارها (file_path) لاستخدامه في image-to-video:
+     * POST /v1/files/upload-urls {items:[{type:"image", extension:"jpg"}]}
+     * ثم PUT لبايتات الملف على upload_url بلا ترويسة Authorization. */
+    suspend fun uploadImage(file: File, key: String): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val ext = file.extension.ifBlank { "jpg" }.lowercase()
+            val body = JSONObject().put(
+                "items",
+                JSONArray().put(JSONObject().put("type", "image").put("extension", ext))
+            )
+            val conn = (URL("$BASE/v1/files/upload-urls").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 20_000
+                readTimeout = 60_000
+                setRequestProperty("Authorization", "Bearer $key")
+                setRequestProperty("Content-Type", "application/json")
+                doOutput = true
+            }
+            conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+            val code = conn.responseCode
+            val raw = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                ?.bufferedReader()?.use { it.readText() } ?: ""
+            if (code == 402) error("انتهى الرصيد المجاني (402)")
+            if (code !in 200..299) error("$code: ${raw.take(200)}")
+            val item = JSONObject(raw).optJSONArray("items")?.optJSONObject(0)
+                ?: error("رد بلا رابط رفع")
+            val uploadUrl = item.optString("upload_url")
+            val filePath = item.optString("file_path")
+            if (uploadUrl.isBlank() || filePath.isBlank()) error("رد رفع ناقص")
+            val put = (URL(uploadUrl).openConnection() as HttpURLConnection).apply {
+                requestMethod = "PUT"
+                connectTimeout = 20_000
+                readTimeout = 120_000
+                setRequestProperty("Content-Type", "image/jpeg")
+                doOutput = true
+            }
+            put.outputStream.use { out -> file.inputStream().use { input -> input.copyTo(out) } }
+            val putCode = put.responseCode
+            if (putCode !in 200..299) error("رفع الصورة: $putCode")
+            filePath
+        }
+    }
+
+    /** صورة ← فيديو: POST /v1/image-to-video {end_seconds, model,
+     * resolution:"480p", style:{prompt}, assets:{image_file_path}} —
+     * يعيد معرّف المشروع. */
+    suspend fun submitImageToVideo(
+        prompt: String,
+        model: String,
+        durationSec: Int,
+        imageFilePath: String,
+        key: String
+    ): Result<String> {
+        val body = JSONObject()
+            .put("name", "Scene image-to-video")
+            .put("end_seconds", durationSec)
+            .put("model", model)
+            .put("resolution", "480p")
+            .put("style", JSONObject().put("prompt", prompt))
+            .put("assets", JSONObject().put("image_file_path", imageFilePath))
+        return postProject("/v1/image-to-video", body, key)
+    }
 
     /** حالة مشروع: (الحالة، رابط التنزيل عند الاكتمال أو null).
      * الحالات: draft / queued / rendering / complete / error / canceled. */

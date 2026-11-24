@@ -112,6 +112,11 @@ private fun freeSitesList() = listOf(
         FreeSite("pixverse", "PixVerse", "https://pixverse.ai", tr("60 رصيداً عند التسجيل + 30 كل يوم، حتى 540p بعلامة مائية.")),
         FreeSite("kling", "Kling", "https://kling.ai", tr("جودة حركة قوية — رصيد مجاني شهري عند تسجيل الدخول (المقدار غير معلن)، بعلامة مائية.")),
         FreeSite("haiper", "Haiper", "https://haiper.ai", tr("300 رصيد بداية، حتى 720p و8 ثوانٍ، بعلامة مائية."))
+        FreeSite("raphael", "Raphael AI", "https://raphael.app", tr("توليد صور بلا حدود على النموذج الأساسي وبلا تسجيل — لكن الصور المجانية بعلامة مائية وللاستخدام غير التجاري فقط."))
+        FreeSite("leonardo", "Leonardo.ai", "https://leonardo.ai", tr("150 نقطة مجانية كل يوم تتجدد (نحو 18 صورة يومياً)، بلا علامة مائية — لكن الصور الناتجة عامة."))
+        FreeSite("bingimage", "Bing Image Creator", "https://www.bing.com/images/create", tr("من مايكروسوفت — 15 إنشاءً سريعاً كل يوم بحساب شخصي، ثم سرعة عادية حتى 200 موجّه يومياً، بلا علامة مائية."))
+        FreeSite("hailuo", "Hailuo AI", "https://hailuoai.video", tr("من MiniMax — حزمة ترحيب لمرة واحدة فقط (~150 رصيداً تنتهي خلال 3 أيام)، لا رصيد يومي متجدد، والفيديو بعلامة مائية."))
+        FreeSite("pika", "Pika", "https://pika.art", tr("الباقة المجانية بلا رصيد منذ سبتمبر 2026 — التوليد بحزم رصيد مدفوعة فقط."))
     )
 
 /** جلسة محفوظة: اسم + معرّفات النماذج المختارة + وقت الحفظ.
