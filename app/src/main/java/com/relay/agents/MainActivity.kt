@@ -176,6 +176,7 @@ private fun titleFor(dest: Int, current: Project?): String = when (dest) {
     20 -> tr("Muse4AI")
     21 -> tr("توليد الفيديو")
     22 -> tr("المتصفح المجاني")
+    23 -> tr("النماذج المختارة")
     6 -> tr("الرفع إلى GitHub")
     7 -> tr("المحاكي والسحابة")
     else -> tr("الملفات")
@@ -293,7 +294,7 @@ fun DrawerContent(
     val pinned = filtered.filter { it.pinned }
     val recent = filtered.filter { !it.pinned }.take(15)
     val nav = listOf(
-        Triple(8, "المحادثة", "💬"), Triple(1, "التشغيل", "▶️"), Triple(15, "سير العمل", "🧭"), Triple(17, "النماذج", "✨"), Triple(18, "VPN", "🛡️"), Triple(19, "محطة الاختبار", "🧪"), Triple(20, "Muse4AI", "🎬"), Triple(21, "توليد الفيديو", "🎬"), Triple(22, "المتصفح المجاني", "🌐"), Triple(0, "الوكلاء", "🤖"), Triple(2, "المشاريع", "🗂️"),
+        Triple(8, "المحادثة", "💬"), Triple(1, "التشغيل", "▶️"), Triple(15, "سير العمل", "🧭"), Triple(17, "النماذج", "✨"), Triple(18, "VPN", "🛡️"), Triple(19, "محطة الاختبار", "🧪"), Triple(20, "Muse4AI", "🎬"), Triple(21, "توليد الفيديو", "🎬"), Triple(22, "المتصفح المجاني", "🌐"), Triple(23, "النماذج المختارة", "🗂️"), Triple(0, "الوكلاء", "🤖"), Triple(2, "المشاريع", "🗂️"),
         Triple(4, "الكود", "💻"), Triple(5, "الملفات", "📄")
     )
     val cloudNav = listOf(Triple(14, "التوجيه والتحليلات", "📊"), Triple(13, "البوابة المحلية", "🌐"), Triple(12, "الموصلات", "🔌"), Triple(6, "الرفع إلى GitHub", "☁️"), Triple(16, "متصفح GitHub", "🌍"), Triple(7, "المحاكي والسحابة", "📱"))
@@ -484,7 +485,8 @@ fun RelayScreen(vm: RelayViewModel) {
                     19 -> TestStationTab(vm) { go(it) }
                     20 -> Muse4AiTab()
                     21 -> VideoGenTab(vm)
-                    22 -> FreeAiTab()
+                    22 -> FreeAiTab(vm) { go(23) }
+                    23 -> PickedModelsTab(vm) { if (backStack.isNotEmpty()) dest = backStack.removeAt(backStack.lastIndex) else dest = 22 }
                     6 -> GitHubTab(vm, gh)
                     7 -> EmulatorTab(vm, gh)
                     else -> SettingsTab()

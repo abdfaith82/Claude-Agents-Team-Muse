@@ -1,5 +1,6 @@
 package com.relay.agents
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.BackHandler
@@ -23,6 +24,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -41,6 +44,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -77,10 +81,10 @@ private data class FreeSite(val id: String, val name: String, val url: String, v
  * kotlin-stdlib ‏1.9.24 وandroidx.core ‏1.15.0 وlifecycle ‏2.8.7 —
  * كلها متوافقة مع الأدوات الحالية.)
  */
-@Composable
-fun FreeAiTab() {
-    val ctx = LocalContext.current
-    val sites = listOf(
+/** قائمة النماذج المجانية — دالة على مستوى الملف لتشترك فيها قائمة
+ * المتصفح المجاني (الوجهة 22) وصفحة النماذج المختارة المنفصلة (الوجهة 23)،
+ * فتُبنى طازجة عند كل استدعاء لتتبع لغة الواجهة الحالية. */
+private fun freeSitesList() = listOf(
         FreeSite("claude", "Claude", "https://claude.ai", tr("كتابة وبرمجة وملفات طويلة — مجاني بحد يومي، ثم يتوقف حتى يتجدد.")),
         FreeSite("chatgpt", "ChatGPT", "https://chatgpt.com", tr("الأشهر والأوسع استخداماً — مجاني بحد للرسائل، مع بحث وتوليد صور.")),
         FreeSite("gemini", "Gemini", "https://gemini.google.com", tr("من جوجل — مجاني، بحث وملفات طويلة، ويتكامل مع حساب جوجل.")),
@@ -93,20 +97,36 @@ fun FreeAiTab() {
         FreeSite("grok", "Grok", "https://grok.com", tr("من xAI — أخبار لحظية من منصة X، مجاني بحد محدود.")),
         FreeSite("muse", "Muse", "https://muse.ai", tr("حسابك مسجل فيه — مجاني، لكن توفره حسب بلدك وقد يطلب انتظاراً."))
     )
+
+/** الجلسات المحفوظة: معرّفات النماذج المختارة آخر مرة، تُحفظ تلقائياً
+ * في SharedPreferences عند كل فتح، وتُستعاد عند العودة — فتبقى الجلسة
+ * (وتبويباتها المحفوظة أصلاً في BrowserHub) متاحة للرجوع إليها في أي وقت. */
+object PickedModelsStore {
+    val pickedIds = mutableStateListOf<String>()
+    private const val KEY = "free_picked_ids"
+    fun load(ctx: Context) {
+        val ids = Storage(ctx).setting(KEY, "").split(",").map { it.trim() }.filter { it.isNotEmpty() }
+        pickedIds.clear()
+        pickedIds.addAll(ids)
+    }
+    fun save(ctx: Context) {
+        Storage(ctx).saveSetting(KEY, pickedIds.joinToString(","))
+    }
+}
+
+@Composable
+fun FreeAiTab(vm: RelayViewModel, onOpenPicked: () -> Unit) {
+    val ctx = LocalContext.current
+    val sites = freeSitesList()
     var openPage by remember { mutableStateOf<Int?>(null) }
     var picking by remember { mutableStateOf(false) }
     var tabPick by remember { mutableStateOf<List<Int>>(emptyList()) }
-    var tabbedPicked by remember { mutableStateOf<List<Int>?>(null) }
-    val picked = tabbedPicked
-    if (picked != null) {
-        BackHandler { tabbedPicked = null; tabPick = emptyList(); picking = false }
-        PickedModelsView(sites, picked) { tabbedPicked = null; tabPick = emptyList(); picking = false }
-        return
-    }
+    // الجلسات المحفوظة: تُستعاد تلقائياً عند فتح القائمة.
+    remember { PickedModelsStore.load(ctx); true }
     val open = openPage
     if (open != null) {
         BackHandler { openPage = null }
-        FreeModelsPager(sites, open) { openPage = null }
+        FreeModelsPager(sites, open, vm) { openPage = null }
         return
     }
     Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -126,8 +146,26 @@ fun FreeAiTab() {
                     BrowserHub.init(ctx, picked.url, sp)
                     if (BrowserHub.tabs.none { it.space == sp }) BrowserHub.newTabForSpace(ctx, sp, picked.url)
                 }
-                tabbedPicked = tabPick
+                // حفظ تلقائي للجلسة ثم فتحها في صفحتها المنفصلة (الوجهة 23).
+                PickedModelsStore.pickedIds.clear()
+                PickedModelsStore.pickedIds.addAll(tabPick.map { sites[it].id })
+                PickedModelsStore.save(ctx)
+                onOpenPicked()
             }, modifier = Modifier.fillMaxWidth()) { Text(tr("عرض النماذج المختارة")) }
+        }
+        // الجلسات المحفوظة: زر للعودة لآخر جلسة في أي وقت (الحفظ تلقائي).
+        if (!picking && PickedModelsStore.pickedIds.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(tr("الجلسات المحفوظة"), style = MaterialTheme.typography.titleSmall)
+                Text(
+                    PickedModelsStore.pickedIds.mapNotNull { id -> sites.firstOrNull { it.id == id }?.name }.joinToString("، "),
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Button(onClick = { onOpenPicked() }, modifier = Modifier.fillMaxWidth()) {
+                    Text(tr("العودة لآخر الجلسات"))
+                }
+                Text(tr("تُحفظ جلساتك تلقائياً — أغلق التطبيق وارجع وقتما تشاء."), style = MaterialTheme.typography.bodySmall)
+            }
         }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(sites, key = { it.id }) { s ->
@@ -161,12 +199,32 @@ fun FreeAiTab() {
     }
 }
 
+/** صفحة النماذج المختارة المنفصلة (الوجهة 23): تقرأ الجلسة المحفوظة
+ * تلقائياً، فإن لم توجد جلسة تعرض رسالة وزراً للعودة للقائمة. */
+@Composable
+fun PickedModelsTab(vm: RelayViewModel, onBack: () -> Unit) {
+    val ctx = LocalContext.current
+    remember { PickedModelsStore.load(ctx); true }
+    val sites = freeSitesList()
+    val indices = PickedModelsStore.pickedIds.mapNotNull { id ->
+        sites.indexOfFirst { it.id == id }.takeIf { it >= 0 }
+    }
+    if (indices.size < 2) {
+        Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(tr("لا توجد جلسات محفوظة بعد — اختر نماذج من المتصفح المجاني أولاً."), style = MaterialTheme.typography.bodyMedium)
+            Button(onClick = onBack) { Text(tr("المتصفح المجاني")) }
+        }
+        return
+    }
+    PickedModelsView(sites, indices, vm, onBack)
+}
+
 /** عرض نموذج واحد مع التبديل بين جميع النماذج بالسحب يميناً ويساراً:
  * كل صفحة في الـ Pager هي متصفح نموذج كامل (لوحته وتبويباته وجلسة
  * تسجيل دخوله المستقلة)، واسم النموذج في الأعلى يتبع الصفحة الحالية. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun FreeModelsPager(sites: List<FreeSite>, initialPage: Int, onBack: () -> Unit) {
+private fun FreeModelsPager(sites: List<FreeSite>, initialPage: Int, vm: RelayViewModel, onBack: () -> Unit) {
     val pagerState = rememberPagerState(initialPage = initialPage) { sites.size }
     val site = sites[pagerState.currentPage]
     Column(Modifier.fillMaxSize()) {
@@ -180,20 +238,20 @@ private fun FreeModelsPager(sites: List<FreeSite>, initialPage: Int, onBack: () 
             style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp)
         )
         HorizontalPager(state = pagerState, modifier = Modifier.fillMaxWidth().weight(1f)) { page ->
-            FreeBrowserPanel(sites[page])
+            FreeBrowserPanel(sites[page], vm)
         }
     }
 }
 
 /** متصفح نموذج واحد: شريط تبويباته فقط، وزر + يفتح تبويباً جديداً للنموذج نفسه. */
 @Composable
-private fun FreeBrowserView(site: FreeSite, onBack: () -> Unit) {
+private fun FreeBrowserView(site: FreeSite, vm: RelayViewModel, onBack: () -> Unit) {
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack) { Text(tr("رجوع")) }
             Text(site.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
         }
-        FreeBrowserPanel(site)
+        FreeBrowserPanel(site, vm)
     }
 }
 
@@ -201,7 +259,7 @@ private fun FreeBrowserView(site: FreeSite, onBack: () -> Unit) {
  * النموذج، ومرة لكل صفحة في عرض النماذج المختارة، فلكل صفحة تبويباتها وجلسة
  * تسجيل دخولها المستقلة عن الصفحات الأخرى. */
 @Composable
-private fun FreeBrowserPanel(site: FreeSite) {
+private fun FreeBrowserPanel(site: FreeSite, vm: RelayViewModel) {
     val ctx = LocalContext.current
     val space = "free:${site.id}"
     remember { BrowserHub.init(ctx, site.url, space); true }
@@ -212,6 +270,22 @@ private fun FreeBrowserPanel(site: FreeSite) {
     LaunchedEffect(tab?.url) { tab?.url?.let { addr = it } }
     var moreMenu by remember { mutableStateOf(false) }
     var plusMenu by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    // التلخيص: يقرأ الوكيل نص الصفحة الحالية ويعطي ملخصاً لها.
+    var sumOpen by remember { mutableStateOf(false) }
+    var sumQuestion by remember { mutableStateOf("") }
+    var sumBusy by remember { mutableStateOf(false) }
+    var sumAnswer by remember { mutableStateOf("") }
+    fun askSum(q: String) {
+        val t = tab ?: return
+        sumBusy = true; sumAnswer = ""
+        scope.launch {
+            val snap = t.snapshot()
+            sumAnswer = if (snap == null) tr("تعذّر قراءة الصفحة. انتظر اكتمال التحميل ثم أعد المحاولة (الجسر لا يعمل على صفحات about: وبعض الصفحات المحمية).")
+            else vm.askAboutPage(q, snapshotToPrompt(snap))
+            sumBusy = false
+        }
+    }
 
     BackHandler(enabled = tab?.canBack == true) { tab?.session?.goBack() }
 
@@ -266,6 +340,9 @@ private fun FreeBrowserPanel(site: FreeSite) {
                 Box {
                     TextButton(onClick = { moreMenu = true }) { Text("⋮") }
                     DropdownMenu(expanded = moreMenu, onDismissRequest = { moreMenu = false }) {
+                        DropdownMenuItem(text = { Text(tr("تلخيص هذه الصفحة")) }, onClick = {
+                            moreMenu = false; sumOpen = true; askSum(tr("لخّص هذه الصفحة بإيجاز."))
+                        })
                         DropdownMenuItem(text = { Text(tr("فتح في المتصفح الخارجي")) }, onClick = {
                             moreMenu = false
                             runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(tab.url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
@@ -301,6 +378,30 @@ private fun FreeBrowserPanel(site: FreeSite) {
             }
         }
     }
+    // نافذة التلخيص: تفتح من قائمة ⋮ وتلخّص الصفحة فوراً، ويمكن سؤال الوكيل عنها.
+    if (sumOpen && tab != null) {
+        AlertDialog(
+            onDismissRequest = { sumOpen = false },
+            title = { Text(tr("تلخيص هذه الجلسة")) },
+            confirmButton = { TextButton(onClick = { sumOpen = false }) { Text(tr("تم")) } },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        tr("يقرأ الوكيل نص الصفحة الحالية ويعطيك ملخصاً لها. يُرسَل نص الصفحة وأسماء حقولها وقيمها (بلا كلمات مرور) إلى الوكيل الرئيسي المحدد في «سير العمل». يقرأ فقط ولا ينفّذ شيئاً في الصفحة."),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        AssistChip(onClick = { askSum(tr("لخّص هذه الصفحة بإيجاز.")) }, label = { Text(tr("لخّص")) }, enabled = !sumBusy)
+                        AssistChip(onClick = { askSum(tr("ما حقول الإدخال في هذه الصفحة وما المطلوب تعبئته؟")) }, label = { Text(tr("اقرأ الحقول")) }, enabled = !sumBusy)
+                    }
+                    OutlinedTextField(sumQuestion, { sumQuestion = it }, label = { Text(tr("سؤالك عن الصفحة")) }, modifier = Modifier.fillMaxWidth())
+                    Button(enabled = !sumBusy && sumQuestion.isNotBlank(), onClick = { askSum(sumQuestion) }) { Text(tr("اسأل")) }
+                    if (sumBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                    if (sumAnswer.isNotEmpty()) Text(sumAnswer, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        )
+    }
 }
 
 /** عرض النماذج المختارة بتبويبات علوية: كل نموذج في صفحة مستقلة كاملة
@@ -309,7 +410,7 @@ private fun FreeBrowserPanel(site: FreeSite) {
  * والسحب يميناً ويساراً يبدّل الصفحة أيضاً ويُحدّث التبويب المختار. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun PickedModelsView(sites: List<FreeSite>, picked: List<Int>, onBack: () -> Unit) {
+private fun PickedModelsView(sites: List<FreeSite>, picked: List<Int>, vm: RelayViewModel, onBack: () -> Unit) {
     val pagerState = rememberPagerState { picked.size }
     val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxSize()) {
@@ -331,7 +432,7 @@ private fun PickedModelsView(sites: List<FreeSite>, picked: List<Int>, onBack: (
             style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
         )
         HorizontalPager(state = pagerState, modifier = Modifier.fillMaxWidth().weight(1f)) { page ->
-            FreeBrowserPanel(sites[picked[page]])
+            FreeBrowserPanel(sites[picked[page]], vm)
         }
     }
 }
