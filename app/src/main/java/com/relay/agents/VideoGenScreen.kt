@@ -2,8 +2,12 @@ package com.relay.agents
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.Context
 import android.graphics.BitmapFactory
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.widget.MediaController
 import android.widget.Toast
 import android.widget.VideoView
@@ -45,8 +49,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 private enum class SceneStatus { IDLE, WRITING, VIDEO, READY, FAILED }
@@ -55,6 +61,31 @@ private enum class SceneStatus { IDLE, WRITING, VIDEO, READY, FAILED }
  * (نسخ الوصف إلى الحافظة + فتح تبويب الموقع — فلا API مجانياً ولا
  * معامل رابط يعبّئ الوصف تلقائياً في أي منها، حسب بحث 2026-11-24). */
 private val VIDEO_SITE_IDS = setOf("flow", "dreamina", "pixverse", "kling", "haiper", "hailuo", "pika")
+
+/** يحفظ صورة إطار المشهد في مجلد التنزيلات العام حتى يستطيع منتقي
+ * الملفات في المتصفح (المبني أصلاً لرفع الملفات من الهاتف) رؤيتها
+ * ورفعها إلى موقع الفيديو — فالحافظة لا توصل صورة إلى صندوق رفع
+ * في صفحة ويب، والتنزيلات هي الجسر الشرعي الوحيد. */
+private fun saveImageToDownloads(ctx: Context, file: File, name: String): Boolean {
+    return runCatching {
+        if (Build.VERSION.SDK_INT >= 29) {
+            val v = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, name)
+                put(MediaStore.Downloads.MIME_TYPE, "image/jpeg")
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+            }
+            val uri = ctx.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v) ?: return false
+            ctx.contentResolver.openOutputStream(uri)?.use { out -> file.inputStream().use { it.copyTo(out) } }
+            true
+        } else {
+            @Suppress("DEPRECATION")
+            val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            dir.mkdirs()
+            file.copyTo(File(dir, name), overwrite = true)
+            true
+        }
+    }.getOrDefault(false)
+}
 
 private data class SceneState(
     val index: Int,
@@ -459,6 +490,7 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
         }
         items(scenes, key = { it.index }) { s ->
             var sendMenu by remember(s.index) { mutableStateOf(false) }
+            var sendImageMenu by remember(s.index) { mutableStateOf(false) }
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(trf("المشهد %s", s.index + 1), style = MaterialTheme.typography.titleSmall)
@@ -523,6 +555,36 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
                                             Toast.makeText(ctx, tr("تم نسخ الوصف — الصقه في صندوق الوصف في الموقع"), Toast.LENGTH_LONG).show()
                                             onOpenSite()
                                         })
+                                    }
+                                }
+                            }
+                            // إرسال الصورة أيضاً: تُحفظ صورة الإطار في التنزيلات
+                            // (ليراها منتقي ملفات المتصفح) ويُنسخ الوصف، ويُفتح
+                            // تبويب الموقع — في الموقع يرفع المستخدم الصورة من
+                            // التنزيلات ثم يلصق الوصف.
+                            if (s.imageFile != null) {
+                                Box {
+                                    OutlinedButton(onClick = { sendImageMenu = true }) { Text(tr("📷 إرسال الصورة إلى موقع")) }
+                                    DropdownMenu(expanded = sendImageMenu, onDismissRequest = { sendImageMenu = false }) {
+                                        videoSites.forEach { site ->
+                                            DropdownMenuItem(text = { Text(site.name) }, onClick = {
+                                                sendImageMenu = false
+                                                val img = s.imageFile ?: return@DropdownMenuItem
+                                                scope.launch {
+                                                    val name = "muse-scene-" + (s.index + 1) + ".jpg"
+                                                    val saved = withContext(Dispatchers.IO) { saveImageToDownloads(ctx, img, name) }
+                                                    if (!saved) {
+                                                        Toast.makeText(ctx, tr("تعذّر حفظ الصورة"), Toast.LENGTH_LONG).show()
+                                                        return@launch
+                                                    }
+                                                    val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                    cm.setPrimaryClip(ClipData.newPlainText("video prompt", s.visualPrompt))
+                                                    vm.pendingSiteId = site.id
+                                                    Toast.makeText(ctx, tr("حُفظت الصورة في التنزيلات ونُسخ الوصف — في الموقع اضغط زر الصورة واخترها من التنزيلات ثم الصق الوصف"), Toast.LENGTH_LONG).show()
+                                                    onOpenSite()
+                                                }
+                                            })
+                                        }
                                     }
                                 }
                             }

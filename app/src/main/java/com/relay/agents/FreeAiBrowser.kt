@@ -69,7 +69,9 @@ import org.json.JSONObject
 import org.mozilla.geckoview.GeckoView
 import java.util.Locale
 
-private data class FreeSite(val id: String, val name: String, val url: String, val desc: String)
+/** موقع في المتصفح المجاني — غير خاص لأن شاشة توليد الفيديو تستخدم
+ * القائمة نفسها لزر «إرسال إلى موقع». */
+internal data class FreeSite(val id: String, val name: String, val url: String, val desc: String)
 
 /**
  * المتصفح المجاني: كل نموذج ذكاء اصطناعي له متصفحه الخاص، منفصل تماماً
@@ -93,7 +95,7 @@ private data class FreeSite(val id: String, val name: String, val url: String, v
 /** قائمة النماذج المجانية — دالة على مستوى الملف لتشترك فيها قائمة
  * المتصفح المجاني (الوجهة 22) وصفحة النماذج المختارة المنفصلة (الوجهة 23)،
  * فتُبنى طازجة عند كل استدعاء لتتبع لغة الواجهة الحالية. */
-private fun freeSitesList() = listOf(
+internal fun freeSitesList() = listOf(
         FreeSite("claude", "Claude", "https://claude.ai", tr("كتابة وبرمجة وملفات طويلة — مجاني بحد يومي، ثم يتوقف حتى يتجدد.")),
         FreeSite("chatgpt", "ChatGPT", "https://chatgpt.com", tr("الأشهر والأوسع استخداماً — مجاني بحد للرسائل، مع بحث وتوليد صور.")),
         FreeSite("gemini", "Gemini", "https://gemini.google.com", tr("من جوجل — مجاني، بحث وملفات طويلة، ويتكامل مع حساب جوجل.")),
