@@ -17,7 +17,7 @@ enum class Provider(
     /** noKey = يعمل بلا مفتاح API إطلاقاً (مثل Pollinations عبر واجهة النص العامة). */
     val noKey: Boolean = false
 ) {
-    CLAUDE("Claude", "claude-sonnet-4-5", "console.anthropic.com", false),
+    CLAUDE("Claude", "claude-sonnet-5-5", "console.anthropic.com", false),
     /** ChatGPT عبر واجهة OpenAI الرسمية — يحتاج مفتاحاً مدفوعاً من platform.openai.com. */
     OPENAI("ChatGPT (OpenAI)", "gpt-4o", "platform.openai.com/api-keys", false,
         "https://api.openai.com/v1/chat/completions"),
