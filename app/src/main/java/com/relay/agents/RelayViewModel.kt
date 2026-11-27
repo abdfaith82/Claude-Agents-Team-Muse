@@ -89,7 +89,8 @@ class RelayViewModel(app: Application) : AndroidViewModel(app) {
         BudgetGate.capUsdPerDay = budgetCap
     }
 
-    fun setBudgetCap(usdPerDay: Double) {
+    /** يحدّث سقف الإنفاق اليومي ويحفظه ويطبّقه على BudgetGate. */
+    fun updateBudgetCap(usdPerDay: Double) {
         budgetCap = usdPerDay.coerceIn(0.0, 1000.0)
         BudgetGate.capUsdPerDay = budgetCap
         storage.saveSetting("budget_cap", budgetCap.toString())

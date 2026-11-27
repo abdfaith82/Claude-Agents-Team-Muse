@@ -749,7 +749,7 @@ fun AgentsTab(vm: RelayViewModel, onLogin: (String) -> Unit) {
                             modifier = Modifier.weight(1f), singleLine = true
                         )
                         Button(onClick = {
-                            vm.setBudgetCap(capText.toDoubleOrNull() ?: 0.0)
+                            vm.updateBudgetCap(capText.toDoubleOrNull() ?: 0.0)
                             Toast.makeText(ctx, tr("تم حفظ السقف"), Toast.LENGTH_SHORT).show()
                         }) { Text(tr("حفظ")) }
                     }
