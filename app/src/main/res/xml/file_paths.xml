@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- مسارات FileProvider لصور الكاميرا (شاشة توليد الصور): ملفات
+     الالتقاط تُحفظ في cacheDir ولا تُشارك إلا برابط مؤقت. -->
+<paths>
+    <cache-path name="camera" path="." />
+</paths>

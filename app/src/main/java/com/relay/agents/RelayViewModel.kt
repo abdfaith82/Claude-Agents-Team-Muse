@@ -238,6 +238,10 @@ class RelayViewModel(app: Application) : AndroidViewModel(app) {
      * الفيديو يضعه هنا، فيفتحه المتصفح المجاني تلقائياً (والوصف منسوخ
      * أصلاً في الحافظة). */
     var pendingSiteId by mutableStateOf("")
+    /** صورة تنتظر شاشة توليد الفيديو: زر «🎬 إلى الفيديو» في شاشة
+     * توليد الصور (أو صورة الكاميرا) يضع مسارها هنا، فتقرأه شاشة
+     * الفيديو وتضيفها مرجعاً مثبّتاً (إطار أول للمقطع). */
+    var pendingImagePath by mutableStateOf("")
     var chatBusy by mutableStateOf(false)
         private set
     var chatStatus by mutableStateOf("")

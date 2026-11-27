@@ -71,8 +71,9 @@ private val VIDEO_SITE_IDS = setOf("flow", "dreamina", "pixverse", "kling", "hai
 /** يحفظ صورة إطار المشهد في مجلد التنزيلات العام حتى يستطيع منتقي
  * الملفات في المتصفح (المبني أصلاً لرفع الملفات من الهاتف) رؤيتها
  * ورفعها إلى موقع الفيديو — فالحافظة لا توصل صورة إلى صندوق رفع
- * في صفحة ويب، والتنزيلات هي الجسر الشرعي الوحيد. */
-private fun saveImageToDownloads(ctx: Context, file: File, name: String): Boolean {
+ * في صفحة ويب، والتنزيلات هي الجسر الشرعي الوحيد. (internal لتستخدمها
+ * شاشة توليد الصور أيضاً لحفظ صورها.) */
+internal fun saveImageToDownloads(ctx: Context, file: File, name: String): Boolean {
     return runCatching {
         if (Build.VERSION.SDK_INT >= 29) {
             val v = ContentValues().apply {
@@ -303,6 +304,20 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
             vm.pendingVideoText = ""
             longText = t
             writeScenes()
+        }
+    }
+
+    // ربط الصور بالفيديو: صورة من شاشة توليد الصور أو الكاميرا تصل
+    // هنا فتُضاف مرجعاً مثبّتاً (إطار أول للمقطع).
+    LaunchedEffect(vm.pendingImagePath) {
+        val p = vm.pendingImagePath
+        if (p.isNotBlank()) {
+            vm.pendingImagePath = ""
+            val f = File(p)
+            if (f.exists() && f.length() > 1024 && refs.size < 3) {
+                refs = refs + f
+                msg = tr("أُضيفت الصورة كمرجع مثبّت — ستُستخدم كإطار أول للمقطع")
+            }
         }
     }
 

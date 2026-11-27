@@ -156,18 +156,30 @@ object VideoGenClient {
 
 /** توليد صورة إطار المشهد عبر Pollinations — بلا مفتاح في العادة:
  * النقطة القديمة image.pollinations.ai/prompt/{prompt}?model=flux
- * ترد صورة بلا مفتاح (تحقّق حيّ 2026-11-24)؛ إن ردّت 401 يُعاد
- * الطلب على النقطة الموثقة gen.pollinations.ai/image بالمفتاح
- * المحفوظ إن وُجد. الصورة 16:9 لتكون إطاراً أول للمقطع. */
+ * ترد صورة بلا مفتاح (تحقّق حيّ 2026-11-27، صورة 512×512 بلا مفتاح،
+ * بحد صورة جديدة كل 45 ثانية لكل IP، وشعار صغير في الزاوية)؛ إن ردّت
+ * 401 (أو 400 لنموذج غير مدعوم بلا مفتاح) يُعاد الطلب على النقطة
+ * الموثقة gen.pollinations.ai/image بالمفتاح المحفوظ إن وُجد.
+ * النماذج المجانية: flux (بلا مفتاح عادة)، turbo (بلا مفتاح عادة)،
+ * gptimage وkontext وseedream (قد تحتاج المفتاح). الصورة 16:9
+ * لتكون إطاراً أول للمقطع — وتُستخدم الدالة نفسها في شاشة توليد
+ * الصور المستقلة بأي نسبة أبعاد. */
 object PollinationsImage {
     const val LEGACY_BASE = "https://image.pollinations.ai"
     const val BASE = "https://gen.pollinations.ai"
+    /** نماذج الصور المجانية في Pollinations (الاسم ← وصفه المختصر). */
+    val FREE_MODELS = listOf(
+        "flux" to "Flux — الأفضل العام",
+        "turbo" to "Turbo — الأسرع",
+        "gptimage" to "GPT Image — أدق التفاصيل",
+        "kontext" to "Kontext — تعديل صورة",
+        "seedream" to "Seedream — واقعي"
+    )
 
-    suspend fun generateImage(prompt: String, cacheDir: File, key: String, width: Int = 768, height: Int = 432): Result<File> =
+    suspend fun generateImage(prompt: String, cacheDir: File, key: String, width: Int = 768, height: Int = 432, model: String = "flux", seed: Int = (0..999999).random()): Result<File> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val p = URLEncoder.encode(prompt, "UTF-8").replace("+", "%20")
-                val seed = (0..999999).random()
                 val file = File(cacheDir, "sceneimg-${UUID.randomUUID()}.jpg")
                 fun download(url: String, auth: String?): Int {
                     val conn = (URL(url).openConnection() as HttpURLConnection).apply {
@@ -181,9 +193,10 @@ object PollinationsImage {
                     }
                     return code
                 }
-                val code = download("$LEGACY_BASE/prompt/$p?model=flux&width=$width&height=$height&seed=$seed", null)
-                if (code == 401 && key.isNotBlank()) {
-                    val code2 = download("$BASE/image/$p?model=flux&width=$width&height=$height&seed=$seed", key)
+                val m = URLEncoder.encode(model, "UTF-8")
+                val code = download("$LEGACY_BASE/prompt/$p?model=$m&width=$width&height=$height&seed=$seed", null)
+                if ((code == 401 || code == 400) && key.isNotBlank()) {
+                    val code2 = download("$BASE/image/$p?model=$m&width=$width&height=$height&seed=$seed", key)
                     if (code2 !in 200..299) error("$code2")
                 } else if (code !in 200..299) {
                     error("$code")
