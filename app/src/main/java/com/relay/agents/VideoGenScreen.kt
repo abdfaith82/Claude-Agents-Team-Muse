@@ -44,6 +44,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -330,35 +331,6 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
         }
     }
 
-    /** بديل ثانٍ (11): إن فُعّلت البدائل ووجد نموذج ثانٍ مختلف،
-     * يولَّد نفس المشهد به ويُحفظ بديلاً يختار المستخدم الاحتفاظ به. */
-    suspend fun maybeAlt(i: Int, models: List<String>, mainModel: String) {
-        if (!variants) return
-        val s = scenes.getOrNull(i) ?: return
-        if (s.status != SceneStatus.READY) return
-        val alt = models.firstOrNull { it != mainModel } ?: return
-        submitAlt(i, alt)
-    }
-
-    suspend fun submitAlt(i: Int, altModel: String) {
-        val s = scenes.getOrNull(i) ?: return
-        val dur = if (s.shotDuration > 0) s.shotDuration else durationSec
-        val prompt = s.visualPrompt + " — " + VideoPlanner.cameraPhrase(s.camera)
-        if (provider == "magic") {
-            val imgPath = s.imageFile?.let { MagicHourClient.uploadImage(it, cfg.magicHourKey).getOrNull() }
-            val res = if (chainMode && imgPath != null)
-                MagicHourClient.submitImageToVideo(prompt, altModel, dur, imgPath, cfg.magicHourKey, s.aspect)
-            else MagicHourClient.submitTextToVideo(prompt, altModel, dur, cfg.magicHourKey, s.aspect)
-            res.onSuccess { id -> pollAlt(i, id, altModel, true) }
-        } else {
-            when (val r = VideoGenClient.submitVideo(prompt, altModel, dur, cfg.apiKey, ctx.cacheDir, s.aspect)) {
-                is VideoGenClient.SubmitResult.Started -> pollAlt(i, r.jobId, altModel, false)
-                is VideoGenClient.SubmitResult.Ready -> updateScene(i) { it.copy(altVideoFile = r.file, altVideoModel = altModel) }
-                else -> Unit
-            }
-        }
-    }
-
     /** يستعلم مهمة البديل حتى تنتهي؛ لا يمسّ حالة اللقطة الرئيسية. */
     suspend fun pollAlt(i: Int, jobId: String, altModel: String, magic: Boolean) {
         val t0 = System.currentTimeMillis()
@@ -387,6 +359,36 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
             }
         }
     }
+
+    suspend fun submitAlt(i: Int, altModel: String) {
+        val s = scenes.getOrNull(i) ?: return
+        val dur = if (s.shotDuration > 0) s.shotDuration else durationSec
+        val prompt = s.visualPrompt + " — " + VideoPlanner.cameraPhrase(s.camera)
+        if (provider == "magic") {
+            val imgPath = s.imageFile?.let { MagicHourClient.uploadImage(it, cfg.magicHourKey).getOrNull() }
+            val res = if (chainMode && imgPath != null)
+                MagicHourClient.submitImageToVideo(prompt, altModel, dur, imgPath, cfg.magicHourKey, s.aspect)
+            else MagicHourClient.submitTextToVideo(prompt, altModel, dur, cfg.magicHourKey, s.aspect)
+            res.onSuccess { id -> pollAlt(i, id, altModel, true) }
+        } else {
+            when (val r = VideoGenClient.submitVideo(prompt, altModel, dur, cfg.apiKey, ctx.cacheDir, s.aspect)) {
+                is VideoGenClient.SubmitResult.Started -> pollAlt(i, r.jobId, altModel, false)
+                is VideoGenClient.SubmitResult.Ready -> updateScene(i) { it.copy(altVideoFile = r.file, altVideoModel = altModel) }
+                else -> Unit
+            }
+        }
+    }
+
+    /** بديل ثانٍ (11): إن فُعّلت البدائل ووجد نموذج ثانٍ مختلف،
+     * يولَّد نفس المشهد به ويُحفظ بديلاً يختار المستخدم الاحتفاظ به. */
+    suspend fun maybeAlt(i: Int, models: List<String>, mainModel: String) {
+        if (!variants) return
+        val s = scenes.getOrNull(i) ?: return
+        if (s.status != SceneStatus.READY) return
+        val alt = models.firstOrNull { it != mainModel } ?: return
+        submitAlt(i, alt)
+    }
+
 
     /** يرسل مشهداً واحداً ثم يستعلم حالته (يُستخدم للتوليد الجماعي ولإعادة المحاولة). */
     suspend fun submitScene(i: Int) {
