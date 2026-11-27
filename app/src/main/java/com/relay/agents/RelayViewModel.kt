@@ -747,7 +747,9 @@ class RelayViewModel(app: Application) : AndroidViewModel(app) {
     fun exportAgentsBackup(pass: String): String {
         val videoKeys = mapOf(
             "pollinations" to SecretStore.decrypt(storage.setting("videogen_key", "")),
-            "magichour" to SecretStore.decrypt(storage.setting("magichour_key", ""))
+            "magichour" to SecretStore.decrypt(storage.setting("magichour_key", "")),
+            "agnes" to SecretStore.decrypt(storage.setting("agnes_key", "")),
+            "novai" to SecretStore.decrypt(storage.setting("novai_key", ""))
         ).filterValues { it.isNotBlank() }
         return BackupCrypto.encrypt(AgentBackup.toJson(agents, videoKeys), pass)
     }
@@ -762,6 +764,8 @@ class RelayViewModel(app: Application) : AndroidViewModel(app) {
             when (k) {
                 "pollinations" -> storage.saveSetting("videogen_key", SecretStore.encrypt(v))
                 "magichour" -> storage.saveSetting("magichour_key", SecretStore.encrypt(v))
+                "agnes" -> storage.saveSetting("agnes_key", SecretStore.encrypt(v))
+                "novai" -> storage.saveSetting("novai_key", SecretStore.encrypt(v))
             }
         }
         added

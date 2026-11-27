@@ -4,7 +4,9 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
@@ -143,7 +145,10 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
     val cfg = remember { VideoGenConfig(storage) }
     var apiKey by remember { mutableStateOf(cfg.apiKey) }
     var magicKey by remember { mutableStateOf(cfg.magicHourKey) }
-    var provider by remember { mutableStateOf("pollinations") }
+    var agnesKey by remember { mutableStateOf(cfg.agnesKey) }
+    var novaiKey by remember { mutableStateOf(cfg.novaiKey) }
+    var provider by remember { mutableStateOf("agnes") }
+    var lastAgnesAt by remember { mutableStateOf(0L) }
     var chainMode by remember { mutableStateOf(true) }
     var mhSelected by remember { mutableStateOf(setOf("ltx-2.5")) }
     var longText by remember { mutableStateOf("") }
@@ -162,6 +167,27 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
     var variants by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val videoSites = remember { freeSitesList().filter { it.id in VIDEO_SITE_IDS } }
+
+    /** يفتح صفحة إنشاء مفتاح المزوّد في متصفح الهاتف الخارجي —
+     * ينشئ المستخدم المفتاح المجاني هناك وينسخه ثم يلصقه هنا. */
+    fun openKeyPage(url: String) {
+        try {
+            ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (e: Exception) {
+            Toast.makeText(ctx, tr("تعذّر فتح المتصفح"), Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** يلصق مفتاحاً من الحافظة في خانة المفتاح. */
+    fun pasteKey(set: (String) -> Unit) {
+        val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val t = cm.primaryClip?.getItemAt(0)?.text?.toString()?.trim().orEmpty()
+        if (t.isBlank()) Toast.makeText(ctx, tr("الحافظة فارغة"), Toast.LENGTH_SHORT).show()
+        else {
+            set(t)
+            Toast.makeText(ctx, tr("تم لصق المفتاح"), Toast.LENGTH_SHORT).show()
+        }
+    }
     val refPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri == null || refs.size >= 3) return@rememberLauncherForActivityResult
         val file = runCatching {
@@ -383,6 +409,8 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
      * يولَّد نفس المشهد به ويُحفظ بديلاً يختار المستخدم الاحتفاظ به. */
     suspend fun maybeAlt(i: Int, models: List<String>, mainModel: String) {
         if (!variants) return
+        // البدائل لمزوّدي Pollinations وMagic Hour فقط — Agnes وNovAI نموذج واحد لكل منهما.
+        if (provider != "magic" && provider != "pollinations") return
         val s = scenes.getOrNull(i) ?: return
         if (s.status != SceneStatus.READY) return
         val alt = models.firstOrNull { it != mainModel } ?: return
@@ -390,12 +418,118 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
     }
 
 
+    /** يستعلم مهمة Agnes حتى تنتهي (مهلة 15 دقيقة). */
+    suspend fun pollAgnes(i: Int, videoId: String, timeoutMs: Long) {
+        val t0 = System.currentTimeMillis()
+        while (System.currentTimeMillis() - t0 < timeoutMs) {
+            delay(5000)
+            val s = scenes.getOrNull(i) ?: return
+            if (s.status != SceneStatus.VIDEO || s.jobId.isBlank()) return
+            AgnesClient.pollStatus(cfg.agnesKey, videoId)
+                .onSuccess { (st, url) ->
+                    when (st) {
+                        "completed" -> {
+                            if (url.isNullOrBlank()) {
+                                updateScene(i) { it.copy(status = SceneStatus.FAILED, error = tr("اكتمل بلا رابط تنزيل")) }
+                            } else {
+                                val target = File(ctx.cacheDir, "videogen-${s.index}-${System.currentTimeMillis()}.mp4")
+                                MagicHourClient.downloadUrl(url, target)
+                                    .onSuccess { updateScene(i) { it.copy(status = SceneStatus.READY, videoFile = target) } }
+                                    .onFailure { err -> updateScene(i) { it.copy(status = SceneStatus.FAILED, error = err.message?.take(160) ?: "") } }
+                            }
+                        }
+                        "failed" -> updateScene(i) { it.copy(status = SceneStatus.FAILED, error = tr("فشل توليد Agnes")) }
+                        else -> Unit
+                    }
+                }
+                .onFailure { /* عابر — نكمل الاستعلام */ }
+        }
+        if (scenes.getOrNull(i)?.status == SceneStatus.VIDEO) {
+            updateScene(i) { it.copy(status = SceneStatus.FAILED, error = tr("انتهت مهلة الانتظار")) }
+        }
+    }
+
+    /** يستعلم مهمة NovAI حتى تنتهي (مهلة 15 دقيقة). */
+    suspend fun pollNovAi(i: Int, taskId: String, timeoutMs: Long) {
+        val t0 = System.currentTimeMillis()
+        while (System.currentTimeMillis() - t0 < timeoutMs) {
+            delay(5000)
+            val s = scenes.getOrNull(i) ?: return
+            if (s.status != SceneStatus.VIDEO || s.jobId.isBlank()) return
+            NovAiClient.taskStatus(cfg.novaiKey, taskId)
+                .onSuccess { (st, url) ->
+                    when (st) {
+                        "completed" -> {
+                            if (url.isNullOrBlank()) {
+                                updateScene(i) { it.copy(status = SceneStatus.FAILED, error = tr("اكتمل بلا رابط تنزيل")) }
+                            } else {
+                                val target = File(ctx.cacheDir, "videogen-${s.index}-${System.currentTimeMillis()}.mp4")
+                                MagicHourClient.downloadUrl(url, target)
+                                    .onSuccess { updateScene(i) { it.copy(status = SceneStatus.READY, videoFile = target) } }
+                                    .onFailure { err -> updateScene(i) { it.copy(status = SceneStatus.FAILED, error = err.message?.take(160) ?: "") } }
+                            }
+                        }
+                        "failed" -> updateScene(i) { it.copy(status = SceneStatus.FAILED, error = tr("فشل توليد NovAI")) }
+                        else -> Unit
+                    }
+                }
+                .onFailure { /* عابر — نكمل الاستعلام */ }
+        }
+        if (scenes.getOrNull(i)?.status == SceneStatus.VIDEO) {
+            updateScene(i) { it.copy(status = SceneStatus.FAILED, error = tr("انتهت مهلة الانتظار")) }
+        }
+    }
+
+    /** يرسل مشهداً واحداً إلى NovAI (البديل الاحتياطي عند امتلاء طابور Agnes). */
+    suspend fun submitNovAiScene(i: Int, prompt: String) {
+        val s = scenes.getOrNull(i) ?: return
+        updateScene(i) { it.copy(status = SceneStatus.VIDEO, videoModel = NovAiClient.MODEL, provider = "novai", error = "", jobId = "") }
+        NovAiClient.submitVideo(cfg.novaiKey, prompt, s.aspect)
+            .onSuccess { id ->
+                updateScene(i) { it.copy(jobId = id) }
+                pollNovAi(i, id, 15 * 60 * 1000)
+            }
+            .onFailure { err -> updateScene(i) { it.copy(status = SceneStatus.FAILED, error = err.message?.take(160) ?: "") } }
+    }
+
     /** يرسل مشهداً واحداً ثم يستعلم حالته (يُستخدم للتوليد الجماعي ولإعادة المحاولة). */
     suspend fun submitScene(i: Int) {
         val s = scenes.getOrNull(i) ?: return
         if (s.visualPrompt.isBlank()) return
         // وصف اللقطة النهائي: الوصف + حركة الكاميرا المختارة في مخطط اللقطة.
         val prompt = s.visualPrompt + " — " + VideoPlanner.cameraPhrase(s.camera)
+        // Agnes (المزوّد الافتراضي — مجاني $0): حدّه طلب واحد في الدقيقة.
+        if (provider == "agnes") {
+            val dur = (if (s.shotDuration > 0) s.shotDuration else durationSec).coerceIn(4, 12)
+            val now = System.currentTimeMillis()
+            val wait = 60_000 - (now - lastAgnesAt)
+            if (wait > 0) {
+                updateScene(i) { it.copy(status = SceneStatus.FAILED, error = trf("انتظر %s ثانية (حد Agnes: طلب واحد في الدقيقة)", wait / 1000 + 1)) }
+                return
+            }
+            lastAgnesAt = now
+            updateScene(i) { it.copy(status = SceneStatus.VIDEO, videoModel = AgnesClient.MODEL, provider = "agnes", error = "", jobId = "") }
+            AgnesClient.submitVideo(cfg.agnesKey, prompt, dur, s.aspect)
+                .onSuccess { id ->
+                    updateScene(i) { it.copy(jobId = id) }
+                    pollAgnes(i, id, 15 * 60 * 1000)
+                }
+                .onFailure { err ->
+                    val m = err.message ?: ""
+                    if ((m.contains("429") || m.contains("ممتلئ")) && cfg.novaiKey.isNotBlank()) {
+                        Toast.makeText(ctx, tr("طابور Agnes ممتلئ — التبديل إلى NovAI"), Toast.LENGTH_LONG).show()
+                        submitNovAiScene(i, prompt)
+                    } else {
+                        updateScene(i) { it.copy(status = SceneStatus.FAILED, error = m.take(160)) }
+                    }
+                }
+            return
+        }
+        // NovAI (البديل الاحتياطي): 5 مقاطع مجانية يومياً.
+        if (provider == "novai") {
+            submitNovAiScene(i, prompt)
+            return
+        }
         val dur = if (s.shotDuration > 0) s.shotDuration else durationSec
         if (provider == "magic") {
             val models = mhSelected.toList()
@@ -462,7 +596,17 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
 
     /** المرحلة 2: كل مقطع يولّده نموذج فيديو مختلف بالتناوب مع غيره. */
     fun generateAll() {
-        if (provider == "magic") {
+        if (provider == "agnes") {
+            if (cfg.agnesKey.isBlank()) {
+                msg = tr("الفيديو يحتاج مفتاح Agnes: أنشئ مفتاحاً مجانياً بلا بطاقة من platform.agnes-ai.com ثم الصقه هنا.")
+                return
+            }
+        } else if (provider == "novai") {
+            if (cfg.novaiKey.isBlank()) {
+                msg = tr("الفيديو يحتاج مفتاح NovAI: أنشئ مفتاحاً مجانياً بلا بطاقة من aiapi-pro.com ثم الصقه هنا.")
+                return
+            }
+        } else if (provider == "magic") {
             if (cfg.magicHourKey.isBlank()) {
                 msg = tr("الفيديو يحتاج مفتاح Magic Hour: أنشئ مفتاحاً مجانياً بلا بطاقة من magichour.ai/developer — رصيده المجاني محدود (نحو 15 مقطعاً قصيراً).")
                 return
@@ -513,6 +657,7 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
                     modifier = Modifier.weight(1f), singleLine = true,
                     visualTransformation = PasswordVisualTransformation()
                 )
+                OutlinedButton(onClick = { pasteKey { apiKey = it } }) { Text(tr("📋 لصق")) }
                 Button(onClick = { cfg.apiKey = apiKey; cfg.save(); msg = tr("تم حفظ المفتاح") }) {
                     Text(tr("حفظ"))
                 }
@@ -530,6 +675,7 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
                     modifier = Modifier.weight(1f), singleLine = true,
                     visualTransformation = PasswordVisualTransformation()
                 )
+                OutlinedButton(onClick = { pasteKey { magicKey = it } }) { Text(tr("📋 لصق")) }
                 Button(onClick = { cfg.magicHourKey = magicKey; cfg.save(); msg = tr("تم حفظ المفتاح") }) {
                     Text(tr("حفظ"))
                 }
@@ -538,6 +684,59 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
                 tr("مجاني: نحو 15 مقطعاً قصيراً (480p) من رصيد التسجيل، ثم يتوقف حتى تشتري رصيداً. مفتاح مجاني بلا بطاقة من magichour.ai/developer."),
                 style = MaterialTheme.typography.bodySmall
             )
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    agnesKey, { agnesKey = it },
+                    label = { Text(tr("مفتاح Agnes")) },
+                    modifier = Modifier.weight(1f), singleLine = true,
+                    visualTransformation = PasswordVisualTransformation()
+                )
+                OutlinedButton(onClick = { pasteKey { agnesKey = it } }) { Text(tr("📋 لصق")) }
+                Button(onClick = { cfg.agnesKey = agnesKey; cfg.save(); msg = tr("تم حفظ المفتاح") }) {
+                    Text(tr("حفظ"))
+                }
+            }
+            Text(
+                tr("Agnes مجاني بالكامل ($0) — بلا رصيد ينفد، طلب واحد في الدقيقة؛ الصوت غير مؤكد (افترض صامتاً)."),
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    novaiKey, { novaiKey = it },
+                    label = { Text(tr("مفتاح NovAI")) },
+                    modifier = Modifier.weight(1f), singleLine = true,
+                    visualTransformation = PasswordVisualTransformation()
+                )
+                OutlinedButton(onClick = { pasteKey { novaiKey = it } }) { Text(tr("📋 لصق")) }
+                Button(onClick = { cfg.novaiKey = novaiKey; cfg.save(); msg = tr("تم حفظ المفتاح") }) {
+                    Text(tr("حفظ"))
+                }
+            }
+            Text(
+                tr("NovAI: 5 مقاطع مجانية يومياً (6 ثوانٍ، 480/720p) — قد تحمل علامة مائية على الباقة المجانية."),
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(tr("🔑 جلب المفاتيح المجانية"), style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        tr("اضغط زر المزوّد فيفتح موقع إنشاء المفتاح في متصفح هاتفك — أنشئ المفتاح المجاني وانسخه، ثم عُد إلى هنا والصقه في خانته بالزر 📋 ثم اضغط حفظ."),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedButton(onClick = { openKeyPage("https://platform.agnes-ai.com") }) { Text(tr("جلب مفتاح Agnes")) }
+                        OutlinedButton(onClick = { openKeyPage("https://www.aiapi-pro.com/free/index.html") }) { Text(tr("جلب مفتاح NovAI")) }
+                        OutlinedButton(onClick = { openKeyPage("https://enter.pollinations.ai") }) { Text(tr("جلب مفتاح Pollinations")) }
+                        OutlinedButton(onClick = { openKeyPage("https://magichour.ai/developer") }) { Text(tr("جلب مفتاح Magic Hour")) }
+                    }
+                }
+            }
         }
         item {
             OutlinedTextField(
@@ -559,9 +758,23 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
         }
         item {
             Text(tr("مزود الفيديو"), style = MaterialTheme.typography.bodySmall)
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FilterChip(selected = provider == "agnes", onClick = { provider = "agnes" }, label = { Text("Agnes ($0)") })
+                FilterChip(selected = provider == "novai", onClick = { provider = "novai" }, label = { Text("NovAI") })
                 FilterChip(selected = provider == "pollinations", onClick = { provider = "pollinations" }, label = { Text("Pollinations") })
                 FilterChip(selected = provider == "magic", onClick = { provider = "magic" }, label = { Text("Magic Hour") })
+            }
+            if (provider == "agnes") {
+                Text(
+                    tr("Agnes مجاني بالكامل ($0) — بلا رصيد ينفد، طلب واحد في الدقيقة؛ الصوت غير مؤكد (افترض صامتاً). عند امتلاء الطابور يتحول تلقائياً إلى NovAI إن أدخلت مفتاحه."),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            if (provider == "novai") {
+                Text(
+                    tr("NovAI: 5 مقاطع مجانية يومياً (6 ثوانٍ، 480/720p) — قد تحمل علامة مائية على الباقة المجانية."),
+                    style = MaterialTheme.typography.bodySmall
+                )
             }
             FilterChip(selected = chainMode, onClick = { chainMode = !chainMode }, label = { Text(tr("سلسلة: صورة ثم فيديو")) })
             Text(
@@ -616,12 +829,16 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
                     }
                 }
             }
-            // تقدير التكلفة (11) قبل التوليد: Magic Hour 24 رصيداً لكل ثانية (480p).
+            // تقدير التكلفة قبل التوليد.
             val readyCount = scenes.count { it.visualPrompt.isNotBlank() }
             if (readyCount > 0) {
                 Text(
-                    if (provider == "magic") trf("التكلفة التقديرية: %s رصيد Magic Hour (%s لقطة × %s ث × 24)", VideoPlanner.magicCredits(readyCount, durationSec), readyCount, durationSec)
-                    else tr("التكلفة: حسب نموذج Pollinations المختار (pollen) — راجع سعر كل نموذج أعلاه."),
+                    when (provider) {
+                        "agnes" -> tr("التكلفة: مجاني $0 — بلا رصيد ينفد (طلب واحد في الدقيقة، وقد يمتلئ الطابور)")
+                        "novai" -> tr("التكلفة: 5 مقاطع مجانية يومياً من NovAI (6 ثوانٍ) — وقد تحمل علامة مائية.")
+                        "magic" -> trf("التكلفة التقديرية: %s رصيد Magic Hour (%s لقطة × %s ث × 24)", VideoPlanner.magicCredits(readyCount, durationSec), readyCount, durationSec)
+                        else -> tr("التكلفة: حسب نموذج Pollinations المختار (pollen) — راجع سعر كل نموذج أعلاه.")
+                    },
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -708,15 +925,22 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
                             )
                         }
                     }
+                    // نموذج اللقطة: Agnes وNovAI نموذج واحد ثابت لكل منهما.
                     var modelMenu by remember(s.index) { mutableStateOf(false) }
-                    Box {
-                        OutlinedButton(onClick = { modelMenu = true }) {
-                            Text(if (s.modelOverride.isBlank()) tr("نموذج اللقطة: تلقائي") else s.modelOverride)
-                        }
-                        DropdownMenu(expanded = modelMenu, onDismissRequest = { modelMenu = false }) {
-                            DropdownMenuItem(text = { Text(tr("تلقائي (بالتناوب)")) }, onClick = { modelMenu = false; updateScene(s.index) { it.copy(modelOverride = "") } })
-                            (if (provider == "magic") MagicHourClient.FREE_MODELS else videoModels.map { it.id }).forEach { m ->
-                                DropdownMenuItem(text = { Text(m) }, onClick = { modelMenu = false; updateScene(s.index) { it.copy(modelOverride = m) } })
+                    if (provider == "agnes") {
+                        Text(tr("النموذج: agnes-video-2.5-flash (720p، 4–12 ث)"), style = MaterialTheme.typography.bodySmall)
+                    } else if (provider == "novai") {
+                        Text(tr("النموذج: cogvideox-flash (6 ث، 480/720p)"), style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        Box {
+                            OutlinedButton(onClick = { modelMenu = true }) {
+                                Text(if (s.modelOverride.isBlank()) tr("نموذج اللقطة: تلقائي") else s.modelOverride)
+                            }
+                            DropdownMenu(expanded = modelMenu, onDismissRequest = { modelMenu = false }) {
+                                DropdownMenuItem(text = { Text(tr("تلقائي (بالتناوب)")) }, onClick = { modelMenu = false; updateScene(s.index) { it.copy(modelOverride = "") } })
+                                (if (provider == "magic") MagicHourClient.FREE_MODELS else videoModels.map { it.id }).forEach { m ->
+                                    DropdownMenuItem(text = { Text(m) }, onClick = { modelMenu = false; updateScene(s.index) { it.copy(modelOverride = m) } })
+                                }
                             }
                         }
                     }

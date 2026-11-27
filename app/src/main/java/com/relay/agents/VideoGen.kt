@@ -349,13 +349,181 @@ object MagicHourClient {
     }
 }
 
+/** يفسّر حالة مهمة فيديو من رد JSON بأشكال مختلفة دفاعياً:
+ * الحالة من status/state/video_status، والرابط من
+ * video_url/url/download_url/result_url (أو data المتداخلة).
+ * يعيد ("completed"/"failed"/"processing"، رابط أو null). */
+private fun parseVideoStatus(raw: String): Pair<String, String?> {
+    fun pick(j: JSONObject): Pair<String, String?> {
+        val st = j.optString("status").ifBlank { j.optString("state") }.ifBlank { j.optString("video_status") }
+        var url = j.optString("video_url").ifBlank { j.optString("url") }
+            .ifBlank { j.optString("download_url") }.ifBlank { j.optString("result_url") }
+            .ifBlank { j.optString("videoUrl") }
+        if (url.isBlank()) {
+            val arr = j.optJSONArray("videos")
+            if (arr != null && arr.length() > 0) url = arr.getJSONObject(0).optString("url")
+        }
+        return st to url.ifBlank { null }
+    }
+    return runCatching {
+        val j = JSONObject(raw)
+        var (st, url) = pick(j)
+        if (st.isBlank() && url == null) {
+            val d = j.optJSONObject("data")
+            if (d != null) {
+                val p = pick(d)
+                st = p.first
+                url = p.second
+            }
+        }
+        val norm = when (st.lowercase()) {
+            "completed", "complete", "success", "succeeded", "finished", "done" -> "completed"
+            "failed", "fail", "error", "cancelled", "canceled" -> "failed"
+            else -> "processing"
+        }
+        if (url != null && norm == "processing" && st.isBlank()) "completed" to url else norm to url
+    }.getOrDefault("processing" to null)
+}
+
+/** Agnes AI — أفضل مزوّد فيديو مجاني موثّق (بحث عميق 2026-11-27):
+ * النموذج agnes-video-2.5-flash بسعر $0/ثانية ضمن عرض ترويجي
+ * محدود (السعر الأصلي $0.025/ث)، 720p، 4–12 ث، نص→فيديو.
+ * بلا رصيد ينفد: الحد هو طلب واحد في الدقيقة، والطابور المجاني
+ * قد يمتلئ (429). المفتاح مجاني بلا بطاقة من platform.agnes-ai.com.
+ * الصورة→فيديو تحتاج رابط صورة عاماً — غير مدعومة هنا.
+ * التوليد نفسه لم يُختبر من الطرف للطرف — شكل الرد يُفسَّر دفاعياً. */
+object AgnesClient {
+    const val BASE = "https://apihub.agnes-ai.com"
+    const val MODEL = "agnes-video-2.5-flash"
+
+    /** يرسل توليد مقطع ويعيد معرّف الفيديو. */
+    suspend fun submitVideo(key: String, prompt: String, seconds: Int, aspectRatio: String): Result<String> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val body = JSONObject()
+                    .put("model", MODEL)
+                    .put("prompt", prompt)
+                    .put("seconds", seconds.coerceIn(4, 12).toString())
+                    .put("mode", "text")
+                    .put("size", "720P")
+                    .put("aspect_ratio", aspectRatio)
+                val conn = (URL("$BASE/v1/videos").openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 20_000
+                    readTimeout = 60_000
+                    setRequestProperty("Authorization", "Bearer $key")
+                    setRequestProperty("Content-Type", "application/json")
+                    doOutput = true
+                }
+                conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+                val code = conn.responseCode
+                val raw = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                    ?.bufferedReader()?.use { it.readText() } ?: ""
+                if (code == 429) error("429: طابور Agnes ممتلئ — جرّب بعد دقيقة")
+                if (code !in 200..299) error("$code: ${raw.take(200)}")
+                val j = JSONObject(raw)
+                val id = j.optString("video_id").ifBlank { j.optString("id") }
+                    .ifBlank { j.optString("task_id") }
+                    .ifBlank { j.optJSONObject("data")?.optString("video_id") ?: "" }
+                    .ifBlank { j.optJSONObject("data")?.optString("id") ?: "" }
+                if (id.isBlank()) error("رد بلا معرّف فيديو") else id
+            }
+        }
+
+    /** حالة مهمة: (الحالة، رابط التنزيل عند الاكتمال أو null). */
+    suspend fun pollStatus(key: String, videoId: String): Result<Pair<String, String?>> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val v = URLEncoder.encode(videoId, "UTF-8")
+                val m = URLEncoder.encode(MODEL, "UTF-8")
+                val conn = (URL("$BASE/agnesapi?video_id=$v&model_name=$m").openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 20_000
+                    readTimeout = 30_000
+                    setRequestProperty("Authorization", "Bearer $key")
+                }
+                val code = conn.responseCode
+                val raw = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                    ?.bufferedReader()?.use { it.readText() } ?: ""
+                if (code !in 200..299) error("$code: ${raw.take(200)}")
+                parseVideoStatus(raw)
+            }
+        }
+}
+
+/** NovAI — وسيط يوصل نموذج CogVideoX-Flash مجاناً:
+ * 5 توليدات فيديو مجانية يومياً (ضمن 10 مكالمات نماذج مجانية)،
+ * 6 ثوانٍ، 480/720p، مفتاح nvai- بتسجيل بريد بلا بطاقة من
+ * aiapi-pro.com، والحد يُصفَّر 00:00 بتوقيت UTC+8. مخرجات الباقة
+ * المجانية قد تحمل علامة NovAI المائية. جودة أقل من Agnes —
+ * بديل احتياطي عند امتلاء طابورها. شكل الاستعلام عن المهمة
+ * (GET /v1/video/generations/{id}) غير موثّق رسمياً بالكامل —
+ * يُفسَّر الرد دفاعياً، وإن فشل الاستعلام تظهر رسالته في المشهد. */
+object NovAiClient {
+    const val BASE = "https://aiapi-pro.com"
+    const val MODEL = "cogvideox-flash"
+
+    /** يرسل توليد مقطع ويعيد معرّف المهمة. */
+    suspend fun submitVideo(key: String, prompt: String, aspectRatio: String): Result<String> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val body = JSONObject()
+                    .put("model", MODEL)
+                    .put("prompt", prompt)
+                    .put("seconds", 6)
+                    .put("size", "720p")
+                    .put("aspect_ratio", aspectRatio)
+                val conn = (URL("$BASE/v1/video/generations").openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 20_000
+                    readTimeout = 60_000
+                    setRequestProperty("Authorization", "Bearer $key")
+                    setRequestProperty("Content-Type", "application/json")
+                    doOutput = true
+                }
+                conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+                val code = conn.responseCode
+                val raw = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                    ?.bufferedReader()?.use { it.readText() } ?: ""
+                if (code == 429) error("429: وصلت لحد NovAI اليومي (5 مقاطع)")
+                if (code !in 200..299) error("$code: ${raw.take(200)}")
+                val j = JSONObject(raw)
+                val id = j.optString("id").ifBlank { j.optString("task_id") }
+                    .ifBlank { j.optString("video_id") }
+                    .ifBlank { j.optJSONObject("data")?.optString("id") ?: "" }
+                if (id.isBlank()) error("رد بلا معرّف مهمة") else id
+            }
+        }
+
+    /** حالة مهمة: (الحالة، رابط التنزيل عند الاكتمال أو null). */
+    suspend fun taskStatus(key: String, taskId: String): Result<Pair<String, String?>> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val t = URLEncoder.encode(taskId, "UTF-8")
+                val conn = (URL("$BASE/v1/video/generations/$t").openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 20_000
+                    readTimeout = 30_000
+                    setRequestProperty("Authorization", "Bearer $key")
+                }
+                val code = conn.responseCode
+                val raw = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                    ?.bufferedReader()?.use { it.readText() } ?: ""
+                if (code !in 200..299) error("$code: ${raw.take(200)}")
+                parseVideoStatus(raw)
+            }
+        }
+}
+
 /** مفتاح Pollinations للفيديو: يُحفظ مشفّراً بـ Keystore عبر SecretStore. */
 class VideoGenConfig(private val st: Storage) {
     var apiKey by mutableStateOf(SecretStore.decrypt(st.setting("videogen_key", "")))
     var magicHourKey by mutableStateOf(SecretStore.decrypt(st.setting("magichour_key", "")))
+    var agnesKey by mutableStateOf(SecretStore.decrypt(st.setting("agnes_key", "")))
+    var novaiKey by mutableStateOf(SecretStore.decrypt(st.setting("novai_key", "")))
 
     fun save() {
         st.saveSetting("videogen_key", SecretStore.encrypt(apiKey.trim()))
         st.saveSetting("magichour_key", SecretStore.encrypt(magicHourKey.trim()))
+        st.saveSetting("agnes_key", SecretStore.encrypt(agnesKey.trim()))
+        st.saveSetting("novai_key", SecretStore.encrypt(novaiKey.trim()))
     }
 }
