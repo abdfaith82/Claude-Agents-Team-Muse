@@ -85,12 +85,14 @@ object VideoGenClient {
         model: String,
         durationSec: Int,
         key: String,
-        cacheDir: File
+        cacheDir: File,
+        aspectRatio: String = "16:9"
     ): SubmitResult = withContext(Dispatchers.IO) {
         try {
             val p = URLEncoder.encode(prompt, "UTF-8").replace("+", "%20")
             val m = URLEncoder.encode(model, "UTF-8").replace("+", "%20")
-            val url = "$BASE/video/$p?model=$m&duration=$durationSec&aspectRatio=16:9"
+            val ar = URLEncoder.encode(aspectRatio, "UTF-8")
+            val url = "$BASE/video/$p?model=$m&duration=$durationSec&aspectRatio=$ar"
             val conn = (URL(url).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 20_000
                 readTimeout = 180_000
@@ -161,7 +163,7 @@ object PollinationsImage {
     const val LEGACY_BASE = "https://image.pollinations.ai"
     const val BASE = "https://gen.pollinations.ai"
 
-    suspend fun generateImage(prompt: String, cacheDir: File, key: String): Result<File> =
+    suspend fun generateImage(prompt: String, cacheDir: File, key: String, width: Int = 768, height: Int = 432): Result<File> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val p = URLEncoder.encode(prompt, "UTF-8").replace("+", "%20")
@@ -179,9 +181,9 @@ object PollinationsImage {
                     }
                     return code
                 }
-                val code = download("$LEGACY_BASE/prompt/$p?model=flux&width=768&height=432&seed=$seed", null)
+                val code = download("$LEGACY_BASE/prompt/$p?model=flux&width=$width&height=$height&seed=$seed", null)
                 if (code == 401 && key.isNotBlank()) {
-                    val code2 = download("$BASE/image/$p?model=flux&width=768&height=432&seed=$seed", key)
+                    val code2 = download("$BASE/image/$p?model=flux&width=$width&height=$height&seed=$seed", key)
                     if (code2 !in 200..299) error("$code2")
                 } else if (code !in 200..299) {
                     error("$code")
@@ -234,12 +236,12 @@ object MagicHourClient {
         }
 
     /** يرسل توليد مقطع من نص ويعيد معرّف المشروع (أو خطأ، ومنه 402 عند نفاد الرصيد). */
-    suspend fun submitTextToVideo(prompt: String, model: String, durationSec: Int, key: String): Result<String> {
+    suspend fun submitTextToVideo(prompt: String, model: String, durationSec: Int, key: String, aspectRatio: String = "16:9"): Result<String> {
         val body = JSONObject()
             .put("model", model)
             .put("style", JSONObject().put("prompt", prompt))
             .put("end_seconds", durationSec)
-            .put("aspect_ratio", "16:9")
+            .put("aspect_ratio", aspectRatio)
             .put("resolution", "480p")
         return postProject("/v1/text-to-video", body, key)
     }
@@ -295,7 +297,8 @@ object MagicHourClient {
         model: String,
         durationSec: Int,
         imageFilePath: String,
-        key: String
+        key: String,
+        aspectRatio: String = "16:9"
     ): Result<String> {
         val body = JSONObject()
             .put("name", "Scene image-to-video")
@@ -303,6 +306,7 @@ object MagicHourClient {
             .put("model", model)
             .put("resolution", "480p")
             .put("style", JSONObject().put("prompt", prompt))
+            .put("aspect_ratio", aspectRatio)
             .put("assets", JSONObject().put("image_file_path", imageFilePath))
         return postProject("/v1/image-to-video", body, key)
     }

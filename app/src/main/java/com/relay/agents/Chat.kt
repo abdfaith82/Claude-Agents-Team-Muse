@@ -9,24 +9,29 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
-/** رسالة محادثة. extras = مخرجات الوكلاء الفردية (مقارنة) أو المسودة والنقد (خط أنابيب). */
+/** رسالة محادثة. extras = مخرجات الوكلاء الفردية (مقارنة) أو المسودة والنقد (خط أنابيب).
+ * extraIds = معرّفات الوكلاء أصحاب extras بنفس الترتيب (لزر «أكمل مع هذا الوكيل»). */
 data class ChatMsg(
     val role: String, // "user" | "assistant"
     val text: String,
     val by: String = "",
     val extras: List<Pair<String, String>> = emptyList(),
-    val ts: Long = System.currentTimeMillis()
+    val ts: Long = System.currentTimeMillis(),
+    val extraIds: List<String> = emptyList()
 ) {
     fun toJson() = JSONObject().put("role", role).put("text", text).put("by", by).put("ts", ts)
         .put("extras", JSONArray(extras.map { JSONObject().put("n", it.first).put("t", it.second) }))
+        .put("ids", JSONArray(extraIds))
 
     companion object {
         fun fromJson(o: JSONObject): ChatMsg {
             val ex = o.optJSONArray("extras") ?: JSONArray()
+            val ids = o.optJSONArray("ids") ?: JSONArray()
             return ChatMsg(
                 o.getString("role"), o.getString("text"), o.optString("by"),
                 (0 until ex.length()).map { ex.getJSONObject(it).let { e -> e.optString("n") to e.optString("t") } },
-                o.optLong("ts")
+                o.optLong("ts"),
+                (0 until ids.length()).map { ids.optString(it) }
             )
         }
     }
@@ -108,7 +113,9 @@ class ChatEngine(private val pool: AgentPool) {
     }
 
     private fun failMsg(): ChatMsg =
-        ChatMsg("assistant", tr("⛔ تعذّر الرد: لا يوجد وكيل متاح.") + if (pool.lastError.isNotEmpty()) "\n${pool.lastError}" else "", "system")
+        ChatMsg("assistant", tr("⛔ تعذّر الرد: لا يوجد وكيل متاح.") +
+            if (BudgetGate.capReached()) tr(" (بلغت سقف الإنفاق اليومي — المزوّدات المجانية فقط متاحة)")
+            else if (pool.lastError.isNotEmpty()) "\n${pool.lastError}" else "", "system")
 
     suspend fun reply(
         history: List<ChatMsg>,
@@ -120,7 +127,8 @@ class ChatEngine(private val pool: AgentPool) {
         profile: String,
         useCache: Boolean,
         compress: Boolean,
-        status: (String) -> Unit
+        status: (String) -> Unit,
+        knowledge: String = ""
     ): ChatMsg {
         pool.sync(agents)
         pool.lastError = ""
@@ -142,6 +150,7 @@ class ChatEngine(private val pool: AgentPool) {
             if (profile.isNotBlank()) append("\n\n--- User profile and preferences (always follow) ---\n").append(profile)
             if (instructions.isNotBlank()) append("\n\n--- User's coordination instructions ---\n").append(instructions.trim())
             if (memory.isNotBlank()) append("\n\n--- Memory of the user's saved projects (use when relevant) ---\n").append(memory)
+            if (knowledge.isNotBlank()) append("\n\n").append(knowledge)
         }
         val prompt = transcript(history, compress)
         val question = history.lastOrNull { it.role == "user" }?.text.orEmpty().take(3000)
@@ -170,17 +179,19 @@ class ChatEngine(private val pool: AgentPool) {
                 status(trf("⏳ %s وكلاء يجيبون بالتوازي…", minOf(team.size, 4)))
                 // تنويع المزوّدين أولاً: وكيل واحد من كل مزوّد (ChatGPT وClaude وMuse وGemini…)
                 // قبل ملء المقاعد الأربعة، حتى لا تحتكر إجابات مزوّد واحد المقارنة والدمج.
+                // سقف الإنفاق يستبعد المدفوع من المقارنة أيضاً.
                 val diverse = (team.groupBy { it.provider }.values.map { it.first() } + team)
-                    .distinctBy { it.id }.take(4)
+                    .distinctBy { it.id }.filter { BudgetGate.allows(it) }.take(4)
                 val answers = coroutineScope {
                     diverse.map { a ->
                         async { pool.router.markStart(a.id); a to ClaudeClient.send(a, system, prompt, 1500) }
                     }.awaitAll()
                 }
                 val ok = ArrayList<Pair<String, String>>()
+                val okIds = ArrayList<String>()
                 for ((a, r) in answers) {
                     when (r) {
-                        is ApiResult.Ok -> { pool.router.onSuccess(a.id, r.ms); ok.add(a.name to r.text.trim()) }
+                        is ApiResult.Ok -> { pool.router.onSuccess(a.id, r.ms); ok.add(a.name to r.text.trim()); okIds.add(a.id) }
                         is ApiResult.Fail -> {
                             pool.router.onFailure(a.id, r.code, r.retryAfterMs, r.fatal, r.message)
                             pool.lastError = "${a.name}: ${r.code} ${r.message.take(120)}"
@@ -188,15 +199,15 @@ class ChatEngine(private val pool: AgentPool) {
                     }
                 }
                 if (ok.isEmpty()) return failMsg()
-                if (ok.size == 1) return ChatMsg("assistant", ok[0].second, ok[0].first)
+                if (ok.size == 1) return ChatMsg("assistant", ok[0].second, ok[0].first, extraIds = okIds)
                 status(tr("⏳ دمج الإجابات…"))
                 val merged = pool.ask(
                     SYNTH_SYSTEM,
                     "Question:\n$question\n\n" + ok.joinToString("\n\n") { "Answer from ${it.first}:\n${it.second.take(3500)}" },
                     2048, eligible, status
                 )
-                return if (merged == null) ChatMsg("assistant", ok[0].second, ok[0].first, ok)
-                else ChatMsg("assistant", merged.text, merged.name + " ⟵ " + ok.joinToString("+") { it.first }, ok)
+                return if (merged == null) ChatMsg("assistant", ok[0].second, ok[0].first, ok, extraIds = okIds)
+                else ChatMsg("assistant", merged.text, merged.name + " ⟵ " + ok.joinToString("+") { it.first }, ok, extraIds = okIds)
             }
             ChatMode.CONSULT -> {
                 if (team.size < 2) {
@@ -207,7 +218,7 @@ class ChatEngine(private val pool: AgentPool) {
                 // الجولة 1: كل وكيل يجيب مستقلاً (حتى 3 وكلاء، بتنويع المزوّدين أولاً).
                 status(trf("⏳ %s وكلاء يجيبون أولاً…", minOf(team.size, 3)))
                 val debaters = (team.groupBy { it.provider }.values.map { it.first() } + team)
-                    .distinctBy { it.id }.take(3)
+                    .distinctBy { it.id }.filter { BudgetGate.allows(it) }.take(3)
                 val first = coroutineScope {
                     debaters.map { a ->
                         async { pool.router.markStart(a.id); a to ClaudeClient.send(a, system, prompt, 1500) }
@@ -260,8 +271,9 @@ class ChatEngine(private val pool: AgentPool) {
                 )
                 val extras = ok.map { (a, t) -> (tr("إجابة أولى") + " · " + a.name) to t } +
                     improved.map { (n, t) -> (tr("بعد التشاور") + " · " + n) to t }
-                return if (merged == null) ChatMsg("assistant", improved[0].second, improved[0].first, extras)
-                else ChatMsg("assistant", merged.text, merged.name + " ⟵ " + improved.joinToString("+") { it.first }, extras)
+                val consultIds = ok.map { it.first.id } + ok.map { it.first.id }
+                return if (merged == null) ChatMsg("assistant", improved[0].second, improved[0].first, extras, extraIds = consultIds)
+                else ChatMsg("assistant", merged.text, merged.name + " ⟵ " + improved.joinToString("+") { it.first }, extras, extraIds = consultIds)
             }
             else -> {
                 val draft = pool.ask(system, prompt, 2048, eligible, status) ?: return failMsg()
@@ -270,7 +282,7 @@ class ChatEngine(private val pool: AgentPool) {
                     CRITIC_SYSTEM, "Question:\n$question\n\nDraft answer:\n${draft.text.take(5000)}", 1200,
                     { eligible(it) && (it.id != draft.id || team.size == 1) }, status
                 )
-                if (critique == null) return ChatMsg("assistant", draft.text, draft.name, listOf(draft.name to draft.text))
+                if (critique == null) return ChatMsg("assistant", draft.text, draft.name, listOf(draft.name to draft.text), extraIds = listOf(draft.id))
                 status(tr("⏳ التحسين النهائي…"))
                 val fin = pool.ask(
                     REFINE_SYSTEM,
@@ -281,7 +293,7 @@ class ChatEngine(private val pool: AgentPool) {
                     (tr("مسودة") + " · " + draft.name) to draft.text,
                     (tr("نقد") + " · " + critique.name) to critique.text
                 )
-                return ChatMsg("assistant", fin?.text ?: draft.text, (fin?.name ?: draft.name) + " ⟵ " + draft.name + "+" + critique.name, extras)
+                return ChatMsg("assistant", fin?.text ?: draft.text, (fin?.name ?: draft.name) + " ⟵ " + draft.name + "+" + critique.name, extras, extraIds = listOf(draft.id, critique.id))
             }
         }
     }

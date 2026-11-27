@@ -38,13 +38,15 @@ class AgentPool {
         images: List<ImageData> = emptyList(), maxWaitMs: Long = 45_000L,
         strat: AgentRouter.Strategy? = null
     ): Ans? {
+        // سقف الإنفاق: عند بلوغه يُستبعد المدفوع من كل طلب محادثة.
+        val withinBudget: (AgentConfig) -> Boolean = { eligible(it) && BudgetGate.allows(it) }
         var waited = 0L
         var tries = 0
         val trace = mutableListOf<Attempt>()
         lastTrace = emptyList()
         while (tries < 20) {
             if (!failover && tries >= 1) return null
-            when (val p = router.pick(eligible, strat ?: router.strategy)) {
+            when (val p = router.pick(withinBudget, strat ?: router.strategy)) {
                 AgentRouter.Pick.None -> {
                     if (lastError.isEmpty()) lastError = "No usable agent"
                     return null

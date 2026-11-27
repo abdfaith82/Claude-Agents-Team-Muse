@@ -10,12 +10,17 @@ import java.security.MessageDigest
 object Telemetry {
     data class Rec(
         val ts: Long, val agentId: String, val agentName: String, val provider: String,
-        val ok: Boolean, val ms: Long, val inChars: Int, val outChars: Int, val code: Int
+        val ok: Boolean, val ms: Long, val inChars: Int, val outChars: Int, val code: Int,
+        /** توكنز حقيقية من رد المزوّد (0 = غير مرسلة، فيُقدَّر من الأحرف). */
+        val inTok: Int = 0, val outTok: Int = 0, val model: String = ""
     )
 
     data class AgentStat(
         val agentId: String, val name: String, val provider: String,
-        val requests: Int, val ok: Int, val avgMs: Long, val tokens: Long
+        val requests: Int, val ok: Int, val avgMs: Long, val tokens: Long,
+        /** تكلفة الدولار (0 إن كان السعر غير معروف أو مجانياً)؛
+         * realTokens = هل جاءت التوكنز من المزوّد فعلاً لا تقديراً. */
+        val costUsd: Double = 0.0, val realTokens: Boolean = false
     ) {
         val successPct: Int get() = if (requests == 0) 0 else ok * 100 / requests
     }
@@ -36,15 +41,18 @@ object Telemetry {
                 for (i in 0 until a.length()) {
                     val o = a.getJSONObject(i)
                     recs.add(Rec(o.getLong("t"), o.getString("i"), o.getString("n"), o.getString("p"),
-                        o.getBoolean("k"), o.getLong("m"), o.getInt("a"), o.getInt("b"), o.getInt("c")))
+                        o.getBoolean("k"), o.getLong("m"), o.getInt("a"), o.getInt("b"), o.getInt("c"),
+                        o.optInt("ti"), o.optInt("to"), o.optString("mo")))
                 }
             }
         }
     }
 
     @Synchronized
-    fun record(a: AgentConfig, ok: Boolean, ms: Long, inChars: Int, outChars: Int, code: Int) {
-        recs.add(Rec(System.currentTimeMillis(), a.id, a.name, a.provider.name, ok, ms, inChars, outChars, code))
+    fun record(a: AgentConfig, ok: Boolean, ms: Long, inChars: Int, outChars: Int, code: Int,
+               inTok: Int = 0, outTok: Int = 0, model: String = "") {
+        recs.add(Rec(System.currentTimeMillis(), a.id, a.name, a.provider.name, ok, ms, inChars, outChars, code,
+            inTok, outTok, model.ifEmpty { a.model }))
         while (recs.size > MAX) recs.removeAt(0)
         if (++sinceSave >= 10) flush()
     }
@@ -57,7 +65,8 @@ object Telemetry {
             val arr = JSONArray()
             recs.forEach {
                 arr.put(JSONObject().put("t", it.ts).put("i", it.agentId).put("n", it.agentName).put("p", it.provider)
-                    .put("k", it.ok).put("m", it.ms).put("a", it.inChars).put("b", it.outChars).put("c", it.code))
+                    .put("k", it.ok).put("m", it.ms).put("a", it.inChars).put("b", it.outChars).put("c", it.code)
+                    .put("ti", it.inTok).put("to", it.outTok).put("mo", it.model))
             }
             f.writeText(arr.toString())
         }
@@ -66,17 +75,22 @@ object Telemetry {
     @Synchronized
     fun clear() { recs.clear(); flush() }
 
-    /** إحصاءات لكل وكيل منذ وقت معيّن (التوكنز تقديرية = أحرف ÷ 4). */
+    /** إحصاءات لكل وكيل منذ وقت معيّن: التوكنز حقيقية إن أرسلها
+     * المزوّد، وإلا تقديرية (أحرف ÷ 4)؛ والتكلفة من جدول الأسعار
+     * للنماذج المعروفة فقط (غير المعروفة تُحسب 0 وتُعرض بلا سعر). */
     @Synchronized
     fun stats(sinceMs: Long): List<AgentStat> = statsOf(recs, sinceMs)
 
     fun statsOf(list: List<Rec>, sinceMs: Long): List<AgentStat> =
         list.filter { it.ts >= sinceMs }.groupBy { it.agentId }.map { (id, rs) ->
             val oks = rs.filter { it.ok }
+            val real = rs.any { it.inTok + it.outTok > 0 }
             AgentStat(
                 id, rs.last().agentName, rs.last().provider, rs.size, oks.size,
                 if (oks.isEmpty()) 0 else oks.map { it.ms }.average().toLong(),
-                rs.sumOf { (it.inChars + it.outChars).toLong() } / 4
+                rs.sumOf { r -> if (r.inTok + r.outTok > 0) (r.inTok + r.outTok).toLong() else (r.inChars + r.outChars).toLong() / 4 },
+                rs.sumOf { r -> CostTable.costUsd(r.model, r.inTok.toLong(), r.outTok.toLong()) ?: 0.0 },
+                real
             )
         }.sortedByDescending { it.requests }
 }

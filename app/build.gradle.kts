@@ -75,6 +75,10 @@ dependencies {
     // محرك فايرفوكس لتبويبات المتصفح المعزولة (GeckoView 137 — الأحدث المتوافق مع مترجم Kotlin ‏1.9.22؛ ‏138+ يجلب kotlin-stdlib ‏2.1)
     implementation("org.mozilla.geckoview:geckoview:137.0.20250414091429")
 
+    // التشغيل المجدول للمهام في الخلفية (v28): WorkManager ينفّذ مهمة
+    // الفريق حتى لو أُغلق التطبيق، ثم ينبّه بالنتيجة.
+    implementation("androidx.work:work-runtime-ktx:2.9.0")
+
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20231013")
 }

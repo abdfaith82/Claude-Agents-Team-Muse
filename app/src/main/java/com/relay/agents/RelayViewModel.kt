@@ -63,9 +63,169 @@ class RelayViewModel(app: Application) : AndroidViewModel(app) {
     val pool = AgentPool()
     private val chatEngine = ChatEngine(pool)
 
+    // ---------- ترقيات v28: مكتبة أوامر، شخصيات، معرفة، تشغيل مجدول ----------
+    private val promptLib = PromptLibrary(app)
+    private val personaStore = PersonaStore(app)
+    private val knowledgeStore = KnowledgeStore(app)
+    private val scheduleStore = ScheduleStore(app)
+    private val branchStore = BranchStore(app)
+
+    var promptTemplates by mutableStateOf(promptLib.load())
+        private set
+    var personas by mutableStateOf(personaStore.load())
+        private set
+    var knowledgeDocs by mutableStateOf(knowledgeStore.list())
+        private set
+    var scheduledRuns by mutableStateOf(scheduleStore.load())
+        private set
+    var branches by mutableStateOf(branchStore.list())
+        private set
+    /** سقف الإنفاق اليومي بالدولار (0 = بلا سقف). */
+    var budgetCap by mutableStateOf(storage.setting("budget_cap", "0").toDoubleOrNull() ?: 0.0)
+        private set
+
     init {
         Telemetry.init(app)
+        BudgetGate.capUsdPerDay = budgetCap
     }
+
+    fun setBudgetCap(usdPerDay: Double) {
+        budgetCap = usdPerDay.coerceIn(0.0, 1000.0)
+        BudgetGate.capUsdPerDay = budgetCap
+        storage.saveSetting("budget_cap", budgetCap.toString())
+    }
+
+    fun spentTodayUsd(): Double = BudgetGate.spentTodayUsd()
+
+    // ---------- مكتبة الأوامر ----------
+    /** القوالب الجاهزة المدمجة (تظهر فوق قوالب المستخدم). */
+    val builtInTemplates: List<PromptTemplate> get() = promptLib.builtIns
+
+    fun addPromptTemplate(name: String, text: String) {
+        if (name.isBlank() || text.isBlank()) return
+        promptLib.add(name, text)
+        promptTemplates = promptLib.load()
+    }
+
+    fun removePromptTemplate(id: String) {
+        promptLib.remove(id)
+        promptTemplates = promptLib.load()
+    }
+
+    /** سلسلة أوامر: يُرسل الأول، ثم يُرسل الثاني وفيه {{النتيجة}} = رد الأول. */
+    fun runPromptChain(first: PromptTemplate, second: PromptTemplate, values: Map<String, String>) {
+        if (chatBusy) return
+        viewModelScope.launch {
+            chatBusy = true
+            try {
+                val q1 = first.fill(values)
+                chat = chat + ChatMsg("user", q1)
+                chatStore.save(chat)
+                val a1 = chatEngine.reply(chat, ChatMode.AUTO, agents, chatInstructions, "",
+                    chatInclude, profileText(), cacheOn, compressOn, { chatStatus = it })
+                chat = chat + a1
+                chatStore.save(chat)
+                val q2 = second.fill(values)
+                    .replace("{{النتيجة}}", a1.text).replace("{{نتيجة}}", a1.text)
+                chat = chat + ChatMsg("user", q2)
+                chatStore.save(chat)
+                val a2 = chatEngine.reply(chat, ChatMode.AUTO, agents, chatInstructions, "",
+                    chatInclude, profileText(), cacheOn, compressOn, { chatStatus = it })
+                chat = chat + a2
+                chatStore.save(chat)
+            } finally {
+                chatBusy = false
+                chatStatus = ""
+            }
+        }
+    }
+
+    // ---------- الشخصيات ----------
+    fun applyPersona(p: Persona) {
+        editChatInstructions(p.system)
+        val match = agents.firstOrNull { it.enabled && !it.provider.manual && it.model == p.model }
+        if (match != null) pickChatAgent(match.id)
+    }
+
+    fun addPersona(name: String, system: String, model: String, provider: Provider) {
+        if (name.isBlank() || system.isBlank()) return
+        personaStore.add(name, system, model, provider)
+        personas = personaStore.load()
+    }
+
+    fun removePersona(id: String) {
+        personaStore.remove(id)
+        personas = personaStore.load()
+    }
+
+    // ---------- قاعدة المعرفة ----------
+    fun addKnowledgeDoc(name: String, text: String) {
+        knowledgeStore.addDoc(name, text)
+        knowledgeDocs = knowledgeStore.list()
+    }
+
+    fun removeKnowledgeDoc(id: String) {
+        knowledgeStore.removeDoc(id)
+        knowledgeDocs = knowledgeStore.list()
+    }
+
+    // ---------- التفرّع (6) ----------
+    /** يفرّع المحادثة عند رسالة: ما قبلها يبقى محادثة جديدة،
+     * والمحادثة الكاملة تُحفظ فرعاً يمكن فتحه لاحقاً. */
+    fun forkChat(index: Int) {
+        if (index !in chat.indices) return
+        val name = chat.getOrNull(index)?.text?.take(40).orEmpty()
+        branchStore.save("فرع: $name", chat)
+        branches = branchStore.list()
+        chat = chat.take(index + 1)
+        chatStore.save(chat)
+    }
+
+    fun openBranch(id: String) {
+        branchStore.load(id)?.let {
+            chat = it.messages
+            chatStore.save(chat)
+        }
+    }
+
+    fun removeBranch(id: String) {
+        branchStore.remove(id)
+        branches = branchStore.list()
+    }
+
+    // ---------- التشغيل المجدول (15) ----------
+    fun scheduleRun(goal: String, delayMin: Int, repeatDaily: Boolean, coding: Boolean, thinking: Boolean): ScheduledRun? {
+        if (goal.isBlank()) return null
+        val run = scheduleStore.add(goal, delayMin, repeatDaily, coding, thinking)
+        scheduledRuns = scheduleStore.load()
+        val data = androidx.work.Data.Builder()
+            .putString("runId", run.id).putString("goal", run.goal)
+            .putBoolean("coding", coding).putBoolean("thinking", thinking).build()
+        val wm = androidx.work.WorkManager.getInstance(getApplication())
+        if (repeatDaily) {
+            val req = androidx.work.PeriodicWorkRequestBuilder<TeamRunWorker>(24, java.util.concurrent.TimeUnit.HOURS)
+                .setInitialDelay(delayMin.toLong(), java.util.concurrent.TimeUnit.MINUTES)
+                .setInputData(data).build()
+            wm.enqueueUniquePeriodicWork("team-run-" + run.id, androidx.work.ExistingPeriodicWorkPolicy.REPLACE, req)
+        } else {
+            val req = androidx.work.OneTimeWorkRequestBuilder<TeamRunWorker>()
+                .setInitialDelay(delayMin.toLong(), java.util.concurrent.TimeUnit.MINUTES)
+                .setInputData(data).build()
+            wm.enqueueUniqueWork("team-run-" + run.id, androidx.work.ExistingWorkPolicy.REPLACE, req)
+        }
+        return run
+    }
+
+    fun refreshScheduledRuns() {
+        scheduledRuns = scheduleStore.load()
+    }
+
+    fun cancelScheduledRun(id: String) {
+        androidx.work.WorkManager.getInstance(getApplication()).cancelUniqueWork("team-run-$id")
+        scheduleStore.remove(id)
+        scheduledRuns = scheduleStore.load()
+    }
+
     private var chatJob: Job? = null
 
     var chat by mutableStateOf(chatStore.load())
@@ -358,9 +518,11 @@ class RelayViewModel(app: Application) : AndroidViewModel(app) {
         val history = chat
         pool.failover = chatFailover
         val memory = if (chatMemory) MemoryBuilder.build(store.list(), t) else ""
+        // قاعدة المعرفة: أهم مقاطع ملفات المستخدم المتعلقة بالسؤال تُحقن في سياق الوكيل.
+        val knowledge = knowledgeStore.contextFor(t)
         chatJob = viewModelScope.launch {
             try {
-                val msg = chatEngine.reply(history, chatMode, agents, chatInstructions, memory, chatInclude, profileText(), cacheOn, compressOn) { chatStatus = it }
+                val msg = chatEngine.reply(history, chatMode, agents, chatInstructions, memory, chatInclude, profileText(), cacheOn, compressOn, { chatStatus = it }, knowledge)
                 chat = chat + msg
                 chatStore.save(chat)
             } finally {
@@ -369,6 +531,15 @@ class RelayViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         return false
+    }
+
+    /** أكمل مع الأفضل (1): بعد مقارنة، يثبّت المحادثة على الوكيل
+     * صاحب أفضل إجابة فردية، فتذهب رسائلك التالية إليه. */
+    fun continueWithBest(id: String) {
+        val a = agents.firstOrNull { it.id == id } ?: return
+        pickChatAgent(id)
+        chat = chat + ChatMsg("assistant", trf("↪️ ستكمل المحادثة مع %s — اكتب رسالتك التالية.", a.name), "system")
+        chatStore.save(chat)
     }
 
     var agents by mutableStateOf(storage.loadAgents())
@@ -571,14 +742,27 @@ class RelayViewModel(app: Application) : AndroidViewModel(app) {
     fun codeFiles(id: String): Map<String, String> =
         store.load(id)?.let { p -> CodeExtractor.extract(p.checkpoint.steps.map { it.result }) } ?: emptyMap()
 
-    /** نسخة احتياطية مشفّرة بكلمة مرور (المفاتيح داخلها) لاستعادة الوكلاء بعد إعادة التثبيت. */
-    fun exportAgentsBackup(pass: String): String = BackupCrypto.encrypt(AgentBackup.toJson(agents), pass)
+    /** نسخة احتياطية مشفّرة بكلمة مرور (المفاتيح داخلها — وكلاء وفيديو) لاستعادة الوكلاء بعد إعادة التثبيت. */
+    fun exportAgentsBackup(pass: String): String {
+        val videoKeys = mapOf(
+            "pollinations" to SecretStore.decrypt(storage.setting("videogen_key", "")),
+            "magichour" to SecretStore.decrypt(storage.setting("magichour_key", ""))
+        ).filterValues { it.isNotBlank() }
+        return BackupCrypto.encrypt(AgentBackup.toJson(agents, videoKeys), pass)
+    }
 
     fun importAgentsBackup(text: String, pass: String): Result<Int> = runCatching {
-        val incoming = AgentBackup.fromJson(BackupCrypto.decrypt(text, pass))
+        val plain = BackupCrypto.decrypt(text, pass)
+        val incoming = AgentBackup.fromJson(plain)
         val (merged, added) = AgentBackup.merge(agents, incoming)
         agents = merged
         storage.saveAgents(agents)
+        AgentBackup.videoKeysFromJson(plain).forEach { (k, v) ->
+            when (k) {
+                "pollinations" -> storage.saveSetting("videogen_key", SecretStore.encrypt(v))
+                "magichour" -> storage.saveSetting("magichour_key", SecretStore.encrypt(v))
+            }
+        }
         added
     }
 

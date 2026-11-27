@@ -30,7 +30,10 @@ class Orchestrator(
                 "Example: [\"Step 1\",\"Step 2\"]. Write the step texts in the language of the goal."
         const val EXEC_SYSTEM =
             "You are an expert executor in a team. Continue the work of previous agents without repeating it. " +
-                "Reason carefully, double-check facts and arithmetic, and answer with the result of the current step directly. " + LANG_RULE
+                "Reason carefully, double-check facts and arithmetic, and answer with the result of the current step directly. " +
+                "Return a COMPACT structured summary (not a long essay): 1) Key findings as short bullets, " +
+                "2) Sources or evidence for each finding when known, 3) Confidence 0-100, " +
+                "4) Open questions or disagreements with earlier steps. Keep it under ~800 words so the lead can merge it. " + LANG_RULE
         const val CODING_SYSTEM =
             "You are an expert software engineer in a team. Write complete, runnable code with no shortcuts, no \"...\" and no placeholder comments. " +
                 "For every file use exactly this block format: ```file:path/to/Name.ext then the code then ```. " +
@@ -50,7 +53,11 @@ class Orchestrator(
             "You are a visual analyst. Describe every image precisely: objects, visible text, approximate dimensions, colors and any detail " +
                 "relevant to the user's project. Number the images in order. " + LANG_RULE
         const val FINAL_SYSTEM =
-            "Combine the step results into one final, well-organized answer for the user. " + LANG_RULE
+            "You are the judge and merger of a team. Combine the step results into one final, well-organized answer for the user. " +
+                "Judge against this rubric: 1) Coverage — every step's key finding is present, 2) Conflicts — when steps disagree, " +
+                "resolve by reasoning and say briefly why, never silently pick one side; list remaining disagreements explicitly, " +
+                "3) Sources — keep the evidence for each claim, 4) Confidence — say what is uncertain. " +
+                "Drop repetition and unverified claims. " + LANG_RULE
         const val FINAL_CODING_SYSTEM =
             "Write a brief engineering summary of the project: file structure, how to build and run it, and anything the user must pay attention to. " +
                 "Do not rewrite the code. " + LANG_RULE
@@ -114,6 +121,8 @@ class Orchestrator(
             if (withContext && attachCtx.isNotBlank())
                 append("\n\n--- Task attachments ---\n$attachCtx")
         }
+        // سقف الإنفاق: عند بلوغه يُستبعد المدفوع من الاختيار في كل مكان.
+        val withinBudget: (AgentConfig) -> Boolean = { eligible(it) && BudgetGate.allows(it) }
         while (coroutineContext.isActive) {
             // قيد الدور (وكيل رئيسي/منفّذون/خطوة مثبّتة) يُتجاهل إن تعطّل أصحابه أو طال انتظارهم.
             val byAssignee: (AgentConfig) -> Boolean = { it.id == assignee }
@@ -127,9 +136,9 @@ class Orchestrator(
                 role == Role.WORKER && workers.isNotEmpty() -> byWorkers
                 else -> null
             }
-            val both: (AgentConfig) -> Boolean = { a -> want != null && want(a) && eligible(a) }
+            val both: (AgentConfig) -> Boolean = { a -> want != null && want(a) && withinBudget(a) }
             val filter: (AgentConfig) -> Boolean =
-                if (want != null && router.hasEligible(both)) both else eligible
+                if (want != null && router.hasEligible(both)) both else withinBudget
             when (val p = router.pick(filter)) {
                 AgentRouter.Pick.None -> {
                     log(tr("⛔ كل الوكلاء معطّلون (تحقق من المفاتيح والنماذج)"))
@@ -210,6 +219,7 @@ class Orchestrator(
         router.load(agents.filter { it.enabled && (it.apiKey.isNotBlank() || it.provider.manual || it.provider.custom) })
         cp = resume ?: Checkpoint(goal, coding = coding, thinking = thinking)
         if (router.size == 0) { log(tr("⛔ لا يوجد وكلاء مفعّلون")); return }
+        if (BudgetGate.capReached()) log(tr("💰 بلغت سقف الإنفاق اليومي — تُستخدم المزوّدات المجانية فقط"))
 
         // 0) المرفقات: وصف الصور/اللقطات مرة واحدة بوكيل رؤية (Claude/Gemini) ليستفيد منه كل الوكلاء.
         var bundle = attachments
@@ -302,9 +312,10 @@ class Orchestrator(
             log(trf("✅ خطوة %s اكتملت بواسطة %s", i + 1, finalRes.second))
         }
 
-        // 3) التجميع النهائي
+        // 3) التجميع النهائي — بحَكَم يقيس النتيجة على معايير
+        // (تغطية، تعارضات تُحلّ صراحة، مصادر، ثقة) بدل دمج صامت.
         if (cp.finished && cp.finalAnswer.isEmpty()) {
-            log(tr("🧩 تجميع النتيجة النهائية…"))
+            log(tr("⚖️ تحكيم النتيجة النهائية…"))
             val finRes = if (cp.coding) {
                 val files = CodeExtractor.extract(cp.steps.map { it.result })
                 callWithFailover(

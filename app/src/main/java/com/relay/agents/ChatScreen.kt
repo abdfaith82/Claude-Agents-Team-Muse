@@ -1,5 +1,8 @@
 package com.relay.agents
 
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -12,19 +15,74 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 
-/** شاشة المحادثة: دردشة مع فريق النماذج، وتحكم بأسلوب التنسيق بينها بتعليمات حرة. */
+/** شاشة المحادثة: دردشة مع فريق النماذج، وتحكم بأسلوب التنسيق بينها بتعليمات حرة.
+ * v28: بحث نصي في المحادثة، تفرّع من أي رسالة، «أكمل مع الأفضل» بعد
+ * المقارنة، مكتبة أوامر بمتغيرات وسلاسل، وإرفاق ملفات معرفة. */
 @Composable
 fun ChatTab(vm: RelayViewModel, onOpenVideo: () -> Unit = {}, onOpenRun: () -> Unit) {
+    val ctx = LocalContext.current
     var input by remember { mutableStateOf("") }
     var panel by remember { mutableStateOf(false) }
+    var showSearch by remember { mutableStateOf(false) }
+    var search by remember { mutableStateOf("") }
+    var libOpen by remember { mutableStateOf(false) }
+    var chainFirst by remember { mutableStateOf<PromptTemplate?>(null) }
+    var fillTarget by remember { mutableStateOf<Pair<PromptTemplate, PromptTemplate?>?>(null) }
     val listState = rememberLazyListState()
     val msgs = vm.chat
+    val processor = remember { AttachmentProcessor(ctx) }
+    val knowledgePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val att = runCatching { processor.process(uri) }.getOrNull()
+        if (att != null && att.text.isNotBlank()) {
+            vm.addKnowledgeDoc(att.name, att.text)
+            Toast.makeText(ctx, trf("أُضيف ملف المعرفة: %s", att.name), Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(ctx, tr("الملف ليس نصاً مقروءاً — جرّب ملف txt أو md"), Toast.LENGTH_LONG).show()
+        }
+    }
+
+    // البحث: يعرض الرسائل المطابقة فقط مع الاحتفاظ بفهرسها الأصلي للتفرّع.
+    val displayed: List<Pair<Int, ChatMsg>> = remember(msgs, search) {
+        val indexed = msgs.withIndex().map { it.index to it.value }
+        if (search.isBlank()) indexed else indexed.filter { (_, m) ->
+            m.text.contains(search, ignoreCase = true) ||
+                m.extras.any { (_, t) -> t.contains(search, ignoreCase = true) }
+        }
+    }
 
     LaunchedEffect(msgs.size, vm.chatBusy) {
         val last = msgs.size + (if (vm.chatBusy) 1 else 0) - 1
         if (last >= 0) listState.animateScrollToItem(last)
+    }
+
+    if (libOpen) PromptLibraryDialog(
+        vm = vm,
+        chainFirst = chainFirst,
+        onPickChain = { chainFirst = it },
+        onUse = { t ->
+            val first = chainFirst
+            chainFirst = null
+            if (first != null && first.id != t.id) fillTarget = first to t
+            else fillTarget = t to null
+            libOpen = false
+        },
+        onDismiss = { libOpen = false; chainFirst = null }
+    )
+
+    fillTarget?.let { (first, second) ->
+        FillVarsDialog(
+            first = first, second = second,
+            onConfirm = { values ->
+                fillTarget = null
+                if (second != null) vm.runPromptChain(first, second, values)
+                else input = first.fill(values)
+            },
+            onDismiss = { fillTarget = null }
+        )
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -49,8 +107,36 @@ fun ChatTab(vm: RelayViewModel, onOpenVideo: () -> Unit = {}, onOpenRun: () -> U
             )
             Text(modeLabel(vm.chatMode), style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f).padding(start = 8.dp), maxLines = 1)
             if (picker) ModelPicker(vm) { picker = false }
+            TextButton(onClick = { showSearch = !showSearch }) { Text("🔍") }
+            TextButton(onClick = { libOpen = true }) { Text("📚") }
             TextButton(onClick = { panel = !panel }) { Text(if (panel) tr("إخفاء التنسيق") else tr("🎛️ التنسيق")) }
             TextButton(enabled = msgs.isNotEmpty(), onClick = { vm.clearChat() }) { Text(tr("مسح")) }
+        }
+
+        if (showSearch) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    search, { search = it },
+                    placeholder = { Text(tr("ابحث في المحادثة…")) },
+                    modifier = Modifier.weight(1f), singleLine = true
+                )
+                if (search.isNotBlank()) Text(
+                    trf("%s نتيجة", displayed.size),
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(start = 8.dp)
+                )
+            }
+        }
+
+        if (vm.branches.isNotEmpty()) {
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(tr("الفروع:"), style = MaterialTheme.typography.labelSmall)
+                vm.branches.forEach { b ->
+                    AssistChip(onClick = { vm.openBranch(b.id) }, label = { Text(b.name.take(24), maxLines = 1) })
+                    TextButton(onClick = { vm.removeBranch(b.id) }) { Text("✕") }
+                }
+            }
         }
 
         if (panel) CoordinationPanel(vm)
@@ -72,7 +158,7 @@ fun ChatTab(vm: RelayViewModel, onOpenVideo: () -> Unit = {}, onOpenRun: () -> U
                 state = listState, modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 8.dp)
             ) {
-                items(msgs.size) { i -> Bubble(msgs[i], vm, onOpenVideo) }
+                items(displayed, key = { (i, _) -> i }) { (i, m) -> Bubble(m, i, vm, onOpenVideo) }
                 if (vm.chatBusy) {
                     item {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -84,11 +170,28 @@ fun ChatTab(vm: RelayViewModel, onOpenVideo: () -> Unit = {}, onOpenRun: () -> U
             }
         }
 
+        if (vm.knowledgeDocs.isNotEmpty()) {
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(tr("📚 معرفة:"), style = MaterialTheme.typography.labelSmall)
+                vm.knowledgeDocs.forEach { d ->
+                    AssistChip(onClick = {}, label = { Text(d.name.take(20), maxLines = 1) })
+                    TextButton(onClick = { vm.removeKnowledgeDoc(d.id) }) { Text("✕") }
+                }
+            }
+            Text(
+                tr("تُستخدم المقاطع ذات الصلة من هذه الملفات في كل سؤال."),
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.padding(horizontal = 12.dp)
+            )
+        }
+
         Row(
             Modifier.fillMaxWidth().padding(8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
+            TextButton(onClick = { knowledgePicker.launch(arrayOf("text/*")) }) { Text("📎") }
             OutlinedTextField(
                 input, { input = it },
                 placeholder = { Text(tr("اكتب رسالة…")) },
@@ -113,6 +216,117 @@ private fun modeLabel(m: ChatMode): String = when (m) {
     ChatMode.COMPARE -> tr("مقارنة")
     ChatMode.PIPELINE -> tr("مسودة ← نقد ← تحسين")
     ChatMode.CONSULT -> tr("تشاور")
+}
+
+/** مكتبة الأوامر: قوالب جاهزة وقوالبك، زر «استخدام» يملأ المتغيرات،
+ * وزر «🔗» يختار أول السلسلة ثم «استخدام» على قالب ثانٍ يشغّلها. */
+@Composable
+private fun PromptLibraryDialog(
+    vm: RelayViewModel,
+    chainFirst: PromptTemplate?,
+    onPickChain: (PromptTemplate) -> Unit,
+    onUse: (PromptTemplate) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var text by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(tr("📚 مكتبة الأوامر")) },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(tr("إغلاق")) } },
+        text = {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (chainFirst != null) {
+                    item { Text(trf("أول السلسلة: %s — اختر القالب الثاني.", chainFirst.name), style = MaterialTheme.typography.bodySmall) }
+                }
+                item { Text(tr("قوالب جاهزة"), style = MaterialTheme.typography.titleSmall) }
+                items(vm.builtInTemplates, key = { it.id }) { t ->
+                    TemplateRow(t, chainFirst, onPickChain, onUse)
+                }
+                if (vm.promptTemplates.isNotEmpty()) {
+                    item { Text(tr("قوالبي"), style = MaterialTheme.typography.titleSmall) }
+                    items(vm.promptTemplates, key = { it.id }) { t ->
+                        TemplateRow(t, chainFirst, onPickChain, onUse)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            TextButton(onClick = { vm.removePromptTemplate(t.id) }) { Text(tr("حذف")) }
+                        }
+                    }
+                }
+                item {
+                    Text(tr("حفظ قالب جديد"), style = MaterialTheme.typography.titleSmall)
+                    OutlinedTextField(name, { name = it }, label = { Text(tr("اسم القالب")) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                    OutlinedTextField(
+                        text, { text = it },
+                        label = { Text(tr("النص — استخدم {{متغير}} لأماكن التعبئة")) },
+                        modifier = Modifier.fillMaxWidth(), minLines = 3
+                    )
+                    Button(
+                        onClick = { vm.addPromptTemplate(name, text); name = ""; text = "" },
+                        enabled = name.isNotBlank() && text.isNotBlank()
+                    ) { Text(tr("حفظ القالب")) }
+                }
+            }
+        }
+    )
+}
+
+@Composable
+private fun TemplateRow(
+    t: PromptTemplate,
+    chainFirst: PromptTemplate?,
+    onPickChain: (PromptTemplate) -> Unit,
+    onUse: (PromptTemplate) -> Unit
+) {
+    Column {
+        Text(t.name, style = MaterialTheme.typography.bodyMedium)
+        Text(t.text.take(120), style = MaterialTheme.typography.bodySmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            TextButton(onClick = { onUse(t) }) { Text(tr("استخدام")) }
+            TextButton(onClick = { onPickChain(t) }) {
+                Text(if (chainFirst?.id == t.id) tr("🔗 أول السلسلة ✓") else tr("🔗 سلسلة"))
+            }
+        }
+    }
+}
+
+/** تعبئة متغيرات {{…}} لقالب (أو قالبين في سلسلة) قبل الإرسال. */
+@Composable
+private fun FillVarsDialog(
+    first: PromptTemplate,
+    second: PromptTemplate?,
+    onConfirm: (Map<String, String>) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val vars = remember(first, second) { (first.vars() + (second?.vars() ?: emptyList())).distinct() }
+    val values = remember { mutableStateMapOf<String, String>() }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (second != null) tr("سلسلة أوامر") else tr("تعبئة القالب")) },
+        confirmButton = {
+            TextButton(
+                enabled = vars.all { (values[it] ?: "").isNotBlank() },
+                onClick = { onConfirm(values.toMap()) }
+            ) { Text(if (second != null) tr("تشغيل السلسلة") else tr("إدراج")) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(tr("إلغاء")) } },
+        text = {
+            if (vars.isEmpty()) {
+                Text(tr("القالب بلا متغيرات — سيُدرج كما هو."))
+            } else {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(vars) { v ->
+                        OutlinedTextField(
+                            values[v] ?: "", { values[v] = it },
+                            label = { Text(v) }, modifier = Modifier.fillMaxWidth(), singleLine = true
+                        )
+                    }
+                    if (second != null) {
+                        item { Text(trf("الأول: %s — الثاني: %s", first.name, second.name), style = MaterialTheme.typography.bodySmall) }
+                    }
+                }
+            }
+        }
+    )
 }
 
 @Composable
@@ -163,7 +377,7 @@ private fun CoordinationPanel(vm: RelayViewModel) {
 }
 
 @Composable
-private fun Bubble(m: ChatMsg, vm: RelayViewModel, onOpenVideo: () -> Unit) {
+private fun Bubble(m: ChatMsg, index: Int, vm: RelayViewModel, onOpenVideo: () -> Unit) {
     val mine = m.role == "user"
     var open by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) {
@@ -184,13 +398,25 @@ private fun Bubble(m: ChatMsg, vm: RelayViewModel, onOpenVideo: () -> Unit) {
                         Text(tr("🎬 إرسال إلى توليد الفيديو"))
                     }
                 }
+                // التفرّع: من أي رسالة يبدأ مسار جديد مع حفظ الكاملة فرعاً.
+                TextButton(onClick = { vm.forkChat(index) }) {
+                    Text(tr("⎇ تفرّع من هنا"))
+                }
                 if (m.extras.isNotEmpty()) {
                     TextButton(onClick = { open = !open }) {
                         Text(if (open) tr("إخفاء الإجابات الفردية") else trf("عرض الإجابات الفردية (%s)", m.extras.size))
                     }
-                    if (open) m.extras.forEach { (n, t) ->
+                    if (open) m.extras.forEachIndexed { j, (n, t) ->
                         Text(n, style = MaterialTheme.typography.labelMedium)
                         SelectionContainer { Text(t, style = MaterialTheme.typography.bodySmall) }
+                        // أكمل مع الأفضل: يثبّت المحادثة على صاحب هذه الإجابة.
+                        val bestId = m.extraIds.getOrNull(j)
+                            ?: vm.agents.firstOrNull { it.name == n }?.id.orEmpty()
+                        if (bestId.isNotEmpty()) {
+                            TextButton(onClick = { vm.continueWithBest(bestId) }) {
+                                Text(trf("↪️ أكمل مع %s", n))
+                            }
+                        }
                     }
                 }
             }

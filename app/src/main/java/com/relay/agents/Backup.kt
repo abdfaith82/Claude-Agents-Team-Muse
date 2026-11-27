@@ -48,13 +48,20 @@ object BackupCrypto {
 }
 
 object AgentBackup {
-    fun toJson(agents: List<AgentConfig>): String =
-        JSONObject().put("version", 1).put("agents", JSONArray(agents.map { it.toJson() })).toString()
+    fun toJson(agents: List<AgentConfig>, videoKeys: Map<String, String> = emptyMap()): String =
+        JSONObject().put("version", 1).put("agents", JSONArray(agents.map { it.toJson() }))
+            .put("videoKeys", JSONObject(videoKeys)).toString()
 
     fun fromJson(text: String): List<AgentConfig> {
         val a = JSONObject(text).getJSONArray("agents")
         return (0 until a.length()).map { AgentConfig.fromJson(a.getJSONObject(it)) }
     }
+
+    /** مفاتيح الفيديو (Pollinations/Magic Hour) داخل نفس الظرف المشفّر — اختياري. */
+    fun videoKeysFromJson(text: String): Map<String, String> = runCatching {
+        val v = JSONObject(text).optJSONObject("videoKeys") ?: return emptyMap()
+        v.keys().asSequence().associateWith { v.optString(it) }.filterValues { it.isNotBlank() }
+    }.getOrDefault(emptyMap())
 
     /** دمج بلا تكرار (نفس المزوّد والمفتاح/الرابط)؛ يرجع القائمة الجديدة وعدد المضاف. */
     fun merge(existing: List<AgentConfig>, incoming: List<AgentConfig>): Pair<List<AgentConfig>, Int> {

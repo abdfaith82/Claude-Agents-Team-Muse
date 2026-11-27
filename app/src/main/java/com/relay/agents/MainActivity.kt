@@ -732,6 +732,85 @@ fun AgentsTab(vm: RelayViewModel, onLogin: (String) -> Unit) {
                 }
             }
         }
+        // سقف الإنفاق اليومي (4): عند بلوغه تُستخدم المزوّدات المجانية فقط.
+        item {
+            var capText by remember { mutableStateOf(if (vm.budgetCap > 0) vm.budgetCap.toString() else "") }
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(tr("💰 سقف الإنفاق اليومي"), style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        trf("إنفاق اليوم: $%s", "%.2f".format(vm.spentTodayUsd())),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            capText, { capText = it },
+                            label = { Text(tr("السقف بالدولار (0 = بلا سقف)")) },
+                            modifier = Modifier.weight(1f), singleLine = true
+                        )
+                        Button(onClick = {
+                            vm.setBudgetCap(capText.toDoubleOrNull() ?: 0.0)
+                            Toast.makeText(ctx, tr("تم حفظ السقف"), Toast.LENGTH_SHORT).show()
+                        }) { Text(tr("حفظ")) }
+                    }
+                    Text(
+                        tr("عند بلوغ السقف تُستخدم المزوّدات المجانية فقط. التكلفة من التوكنز الحقيقية التي يرسلها المزوّد، وأسعار الدولار تقريبية للنماذج المعروفة."),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        }
+        // الشخصيات المحفوظة (9): تطبيقها يضبط تعليمات المحادثة ويختار
+        // الوكيل المطابق للنموذج إن وُجد.
+        item {
+            var pName by remember { mutableStateOf("") }
+            var pSystem by remember { mutableStateOf("") }
+            var pModel by remember { mutableStateOf(provider.defaultModel) }
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(tr("🎭 الشخصيات المحفوظة"), style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        tr("التطبيق يضبط تعليمات المحادثة على نظام الشخصية ويختار الوكيل المطابق لنموذجها إن وُجد."),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    PersonaPresets.BUILT_IN.forEach { p ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(p.name, style = MaterialTheme.typography.bodyMedium)
+                                Text("${p.provider.label} • ${p.model}", style = MaterialTheme.typography.bodySmall)
+                            }
+                            TextButton(onClick = {
+                                vm.applyPersona(p)
+                                Toast.makeText(ctx, trf("طُبّقت شخصية: %s", p.name), Toast.LENGTH_SHORT).show()
+                            }) { Text(tr("تطبيق")) }
+                        }
+                    }
+                    vm.personas.forEach { p ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(p.name, style = MaterialTheme.typography.bodyMedium)
+                                Text("${p.provider.label} • ${p.model}", style = MaterialTheme.typography.bodySmall)
+                            }
+                            TextButton(onClick = { vm.applyPersona(p) }) { Text(tr("تطبيق")) }
+                            TextButton(onClick = { vm.removePersona(p.id) }) { Text(tr("حذف")) }
+                        }
+                    }
+                    Divider()
+                    Text(tr("شخصية جديدة (تستخدم المزوّد المختار أعلاه)"), style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(pName, { pName = it }, label = { Text(tr("اسم الشخصية")) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                    OutlinedTextField(pModel, { pModel = it }, label = { Text(tr("النموذج")) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                    OutlinedTextField(
+                        pSystem, { pSystem = it },
+                        label = { Text(tr("تعليمات النظام (بالإنجليزية أدق)")) },
+                        modifier = Modifier.fillMaxWidth(), minLines = 3
+                    )
+                    Button(
+                        onClick = { vm.addPersona(pName, pSystem, pModel.ifBlank { provider.defaultModel }, provider); pName = ""; pSystem = "" },
+                        enabled = pName.isNotBlank() && pSystem.isNotBlank()
+                    ) { Text(tr("حفظ الشخصية")) }
+                }
+            }
+        }
     }
 }
 
@@ -910,6 +989,11 @@ fun RunTab(vm: RelayViewModel) {
     var coding by remember { mutableStateOf(vm.defaultCoding) }
     var thinking by remember { mutableStateOf(vm.defaultThinking) }
     val cp = vm.checkpoint
+    val ctx = LocalContext.current
+    var schedGoal by remember { mutableStateOf("") }
+    var schedDelay by remember { mutableStateOf(60) }
+    var schedRepeat by remember { mutableStateOf(false) }
+    val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         vm.addFiles(uris)
     }
@@ -1002,6 +1086,77 @@ fun RunTab(vm: RelayViewModel) {
             }
             item { Text(tr("السجل"), style = MaterialTheme.typography.titleSmall) }
             items(cp.log.takeLast(40).reversed()) { Text(it, style = MaterialTheme.typography.bodySmall) }
+        }
+        // التشغيل المجدول (15): ينفّذ الفريق المهمة في الخلفية حتى
+        // لو أُغلق التطبيق، ويحفظها مشروعاً وينبّه بالنتيجة.
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(tr("⏰ تشغيل مجدول"), style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        tr("ينفّذ الفريق المهمة في الخلفية في وقتها، ويحفظها في المشاريع وينبّهك بالنتيجة. الوكيل اليدوي يُتخطى لأنه يحتاج إنساناً."),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    OutlinedTextField(
+                        schedGoal, { schedGoal = it },
+                        label = { Text(tr("هدف المهمة المجدولة")) },
+                        modifier = Modifier.fillMaxWidth(), minLines = 2
+                    )
+                    Text(tr("بعد كم دقيقة؟"), style = MaterialTheme.typography.bodySmall)
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(15, 60, 240, 1440).forEach { d ->
+                            FilterChip(
+                                selected = schedDelay == d,
+                                onClick = { schedDelay = d },
+                                label = { Text(if (d < 60) trf("%s دقيقة", d) else trf("%s ساعة", d / 60)) }
+                            )
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Switch(schedRepeat, { schedRepeat = it })
+                        Spacer(Modifier.width(8.dp))
+                        Text(tr("تكرار يومي"), style = MaterialTheme.typography.bodySmall)
+                    }
+                    Button(
+                        onClick = {
+                            if (Build.VERSION.SDK_INT >= 33) {
+                                notifPerm.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                            }
+                            val run = vm.scheduleRun(schedGoal, schedDelay, schedRepeat, coding, thinking)
+                            if (run != null) {
+                                Toast.makeText(ctx, tr("تمت الجدولة"), Toast.LENGTH_SHORT).show()
+                                schedGoal = ""
+                            } else {
+                                Toast.makeText(ctx, tr("اكتب هدف المهمة أولاً"), Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        enabled = schedGoal.isNotBlank()
+                    ) { Text(tr("جدولة التشغيل")) }
+                    if (vm.scheduledRuns.isNotEmpty()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(tr("المهام المجدولة"), style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                            TextButton(onClick = { vm.refreshScheduledRuns() }) { Text(tr("تحديث")) }
+                        }
+                        vm.scheduledRuns.forEach { r ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(r.goal.take(60), style = MaterialTheme.typography.bodyMedium)
+                                    Text(
+                                        when (r.status) {
+                                            "running" -> tr("قيد التنفيذ…")
+                                            "done" -> tr("اكتملت ✓")
+                                            "failed" -> tr("فشلت")
+                                            else -> trf("بعد %s دقيقة", r.delayMin) + if (r.repeatDaily) tr(" • يومي") else ""
+                                        },
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                                TextButton(onClick = { vm.cancelScheduledRun(r.id) }) { Text(tr("إلغاء")) }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

@@ -11,6 +11,8 @@ import android.provider.MediaStore
 import android.widget.MediaController
 import android.widget.Toast
 import android.widget.VideoView
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -54,6 +56,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.UUID
 
 private enum class SceneStatus { IDLE, WRITING, VIDEO, READY, FAILED }
 
@@ -92,15 +95,23 @@ private data class SceneState(
     val source: String,
     val agentName: String = "",
     val visualPrompt: String = "",
+    val originalPrompt: String = "",
     val videoModel: String = "",
     val provider: String = "pollinations",
     val jobId: String = "",
     val videoFile: File? = null,
+    val altVideoFile: File? = null,
+    val altVideoModel: String = "",
     val imageFile: File? = null,
     val imageStatus: String = "",
     val imageError: String = "",
     val status: SceneStatus = SceneStatus.IDLE,
-    val error: String = ""
+    val error: String = "",
+    // مخطط اللقطة (7+14): حركة كاميرا + مدة + نسبة أبعاد + نموذج لكل لقطة.
+    val camera: String = "ثابت",
+    val shotDuration: Int = 0, // 0 = المدة العامة
+    val aspect: String = "16:9",
+    val modelOverride: String = ""
 )
 
 /** تعليمات كتابة وصف المشهد بالإنجليزية (لنماذج الفيديو) — نص توجيه، لا واجهة. */
@@ -140,10 +151,26 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
     var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
     var scenes by remember { mutableStateOf<List<SceneState>>(emptyList()) }
     var msg by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
+    var busy by mutableStateOf(false)
     var playing by remember { mutableStateOf<File?>(null) }
+    // المراجع المثبّتة (10): حتى 3 صور تُستخدم كإطار أول عند غياب إطار المشهد.
+    var refs by remember { mutableStateOf<List<File>>(emptyList()) }
+    // قفل الإطار (10): كل اللقطات تعيد استخدام إطار اللقطة الأولى.
+    var lockFrame by remember { mutableStateOf(false) }
+    // بدائل (11): بديل ثانٍ بنموذج مختلف لكل لقطة.
+    var variants by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val videoSites = remember { freeSitesList().filter { it.id in VIDEO_SITE_IDS } }
+    val refPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri == null || refs.size >= 3) return@rememberLauncherForActivityResult
+        val file = runCatching {
+            val target = File(ctx.cacheDir, "ref-${UUID.randomUUID()}.jpg")
+            ctx.contentResolver.openInputStream(uri)?.use { input -> target.outputStream().use { out -> input.copyTo(out) } }
+            target
+        }.getOrNull()
+        if (file != null && file.length() > 1024) refs = refs + file
+        else Toast.makeText(ctx, tr("تعذّر قراءة الصورة"), Toast.LENGTH_SHORT).show()
+    }
 
     LaunchedEffect(Unit) {
         VideoGenClient.listVideoModels()
@@ -257,27 +284,132 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
     suspend fun generateImageForScene(i: Int): Boolean {
         val s = scenes.getOrNull(i) ?: return false
         if (s.visualPrompt.isBlank()) return false
+        // قفل الإطار (10): اللقطات التالية تعيد استخدام إطار اللقطة الأولى.
+        if (lockFrame && i > 0) {
+            val first = scenes.getOrNull(0)?.imageFile
+            if (first != null) {
+                updateScene(i) { it.copy(imageFile = first, imageStatus = "done") }
+                return true
+            }
+        }
         updateScene(i) { it.copy(imageStatus = "loading", imageError = "") }
-        return PollinationsImage.generateImage(s.visualPrompt, ctx.cacheDir, cfg.apiKey)
+        val (w, h) = VideoPlanner.aspectSize(s.aspect)
+        return PollinationsImage.generateImage(s.visualPrompt, ctx.cacheDir, cfg.apiKey, w, h)
             .onSuccess { file -> updateScene(i) { it.copy(imageFile = file, imageStatus = "done") } }
             .onFailure { err ->
                 updateScene(i) { it.copy(imageStatus = "failed", imageError = err.message?.take(120) ?: "") }
             }.isSuccess
     }
 
+    /** محسّن الوصف (8): وكيل يعيد كتابة الوصف بصيغة Flow الخماسية
+     * (نص→فيديو) أو حركة وكاميرا فقط (صورة→فيديو). */
+    fun enhanceScene(i: Int) {
+        val s = scenes.getOrNull(i) ?: return
+        if (s.visualPrompt.isBlank()) return
+        val agents = vm.agents.filter { it.enabled && !it.provider.manual }
+        if (agents.isEmpty()) {
+            msg = tr("أضف وكيلاً مفعّلاً أولاً لتحسين الوصف")
+            return
+        }
+        scope.launch {
+            busy = true
+            val sys = if (chainMode) VideoPlanner.ENHANCE_I2V_SYSTEM else VideoPlanner.ENHANCE_T2V_SYSTEM
+            when (val r = ClaudeClient.send(agents.first(), sys, s.visualPrompt, maxTokens = 512)) {
+                is ApiResult.Ok -> {
+                    updateScene(i) {
+                        it.copy(
+                            originalPrompt = if (it.originalPrompt.isEmpty()) it.visualPrompt else it.originalPrompt,
+                            visualPrompt = r.text.trim().take(600)
+                        )
+                    }
+                    msg = tr("تم تحسين الوصف")
+                }
+                is ApiResult.Fail -> msg = trf("تعذّر التحسين: %s", r.message.take(120))
+            }
+            busy = false
+        }
+    }
+
+    /** بديل ثانٍ (11): إن فُعّلت البدائل ووجد نموذج ثانٍ مختلف،
+     * يولَّد نفس المشهد به ويُحفظ بديلاً يختار المستخدم الاحتفاظ به. */
+    suspend fun maybeAlt(i: Int, models: List<String>, mainModel: String) {
+        if (!variants) return
+        val s = scenes.getOrNull(i) ?: return
+        if (s.status != SceneStatus.READY) return
+        val alt = models.firstOrNull { it != mainModel } ?: return
+        submitAlt(i, alt)
+    }
+
+    suspend fun submitAlt(i: Int, altModel: String) {
+        val s = scenes.getOrNull(i) ?: return
+        val dur = if (s.shotDuration > 0) s.shotDuration else durationSec
+        val prompt = s.visualPrompt + " — " + VideoPlanner.cameraPhrase(s.camera)
+        if (provider == "magic") {
+            val imgPath = s.imageFile?.let { MagicHourClient.uploadImage(it, cfg.magicHourKey).getOrNull() }
+            val res = if (chainMode && imgPath != null)
+                MagicHourClient.submitImageToVideo(prompt, altModel, dur, imgPath, cfg.magicHourKey, s.aspect)
+            else MagicHourClient.submitTextToVideo(prompt, altModel, dur, cfg.magicHourKey, s.aspect)
+            res.onSuccess { id -> pollAlt(i, id, altModel, true) }
+        } else {
+            when (val r = VideoGenClient.submitVideo(prompt, altModel, dur, cfg.apiKey, ctx.cacheDir, s.aspect)) {
+                is VideoGenClient.SubmitResult.Started -> pollAlt(i, r.jobId, altModel, false)
+                is VideoGenClient.SubmitResult.Ready -> updateScene(i) { it.copy(altVideoFile = r.file, altVideoModel = altModel) }
+                else -> Unit
+            }
+        }
+    }
+
+    /** يستعلم مهمة البديل حتى تنتهي؛ لا يمسّ حالة اللقطة الرئيسية. */
+    suspend fun pollAlt(i: Int, jobId: String, altModel: String, magic: Boolean) {
+        val t0 = System.currentTimeMillis()
+        while (System.currentTimeMillis() - t0 < 15 * 60 * 1000) {
+            delay(5000)
+            if (scenes.getOrNull(i)?.videoFile == null) return
+            if (magic) {
+                val res = MagicHourClient.projectStatus(jobId, cfg.magicHourKey).getOrNull() ?: continue
+                val (st, url) = res
+                if (st == "complete" && !url.isNullOrBlank()) {
+                    val target = File(ctx.cacheDir, "videogen-alt-${i}-${System.currentTimeMillis()}.mp4")
+                    MagicHourClient.downloadUrl(url, target)
+                        .onSuccess { updateScene(i) { it.copy(altVideoFile = target, altVideoModel = altModel) } }
+                    return
+                }
+                if (st == "error" || st == "canceled") return
+            } else {
+                val st = VideoGenClient.jobStatus(jobId, cfg.apiKey).getOrNull() ?: continue
+                if (st == "succeeded") {
+                    val target = File(ctx.cacheDir, "videogen-alt-${i}-${System.currentTimeMillis()}.mp4")
+                    VideoGenClient.downloadResult(jobId, cfg.apiKey, target)
+                        .onSuccess { updateScene(i) { it.copy(altVideoFile = target, altVideoModel = altModel) } }
+                    return
+                }
+                if (st == "failed" || st == "cancelled") return
+            }
+        }
+    }
+
     /** يرسل مشهداً واحداً ثم يستعلم حالته (يُستخدم للتوليد الجماعي ولإعادة المحاولة). */
     suspend fun submitScene(i: Int) {
         val s = scenes.getOrNull(i) ?: return
         if (s.visualPrompt.isBlank()) return
+        // وصف اللقطة النهائي: الوصف + حركة الكاميرا المختارة في مخطط اللقطة.
+        val prompt = s.visualPrompt + " — " + VideoPlanner.cameraPhrase(s.camera)
+        val dur = if (s.shotDuration > 0) s.shotDuration else durationSec
         if (provider == "magic") {
             val models = mhSelected.toList()
             if (models.isEmpty()) return
-            val model = models[i % models.size]
+            val model = s.modelOverride.ifBlank { models[i % models.size] }
             updateScene(i) { it.copy(status = SceneStatus.VIDEO, videoModel = model, provider = "magic", error = "", jobId = "") }
             // السلسلة: الصورة إطار أول للمقطع؛ إن تعذّر توليدها أو
             // رفعها، يولَّد الفيديو من النص مباشرة ولا يتعطل المشهد.
             val projectId: Result<String> = if (chainMode) {
                 var img = scenes.getOrNull(i)?.imageFile
+                // مراجع مثبّتة (10): إن لم توجد صورة إطار، يُستخدم أول
+                // مرجع مثبّت كإطار أول للمقطع.
+                if (img == null && refs.isNotEmpty()) {
+                    img = refs.first()
+                    updateScene(i) { it.copy(imageFile = img, imageStatus = "done") }
+                }
                 if (img == null) {
                     if (generateImageForScene(i)) img = scenes.getOrNull(i)?.imageFile else {
                         updateScene(i) { it.copy(imageError = tr("تعذّر توليد الصورة، سيولَّد الفيديو من النص")) }
@@ -286,37 +418,42 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
                 if (img != null) {
                     MagicHourClient.uploadImage(img, cfg.magicHourKey).fold(
                         onSuccess = { path ->
-                            MagicHourClient.submitImageToVideo(s.visualPrompt, model, durationSec, path, cfg.magicHourKey)
+                            MagicHourClient.submitImageToVideo(prompt, model, dur, path, cfg.magicHourKey, s.aspect)
                         },
                         onFailure = { err ->
                             updateScene(i) { it.copy(imageError = trf("تعذّر رفع الصورة: %s", err.message?.take(120))) }
-                            MagicHourClient.submitTextToVideo(s.visualPrompt, model, durationSec, cfg.magicHourKey)
+                            MagicHourClient.submitTextToVideo(prompt, model, dur, cfg.magicHourKey, s.aspect)
                         }
                     )
                 } else {
-                    MagicHourClient.submitTextToVideo(s.visualPrompt, model, durationSec, cfg.magicHourKey)
+                    MagicHourClient.submitTextToVideo(prompt, model, dur, cfg.magicHourKey, s.aspect)
                 }
             } else {
-                MagicHourClient.submitTextToVideo(s.visualPrompt, model, durationSec, cfg.magicHourKey)
+                MagicHourClient.submitTextToVideo(prompt, model, dur, cfg.magicHourKey, s.aspect)
             }
             projectId
                 .onSuccess { id ->
                     updateScene(i) { it.copy(jobId = id) }
                     pollScene(i, 15 * 60 * 1000)
+                    maybeAlt(i, models, model)
                 }
                 .onFailure { err -> updateScene(i) { it.copy(status = SceneStatus.FAILED, error = err.message?.take(160) ?: "") } }
             return
         }
         val models = selected.toList()
         if (models.isEmpty()) return
-        val model = models[i % models.size]
+        val model = s.modelOverride.ifBlank { models[i % models.size] }
         updateScene(i) { it.copy(status = SceneStatus.VIDEO, videoModel = model, provider = "pollinations", error = "", jobId = "") }
-        when (val r = VideoGenClient.submitVideo(s.visualPrompt, model, durationSec, cfg.apiKey, ctx.cacheDir)) {
+        when (val r = VideoGenClient.submitVideo(prompt, model, dur, cfg.apiKey, ctx.cacheDir, s.aspect)) {
             is VideoGenClient.SubmitResult.Started -> {
                 updateScene(i) { it.copy(jobId = r.jobId) }
                 pollScene(i, 15 * 60 * 1000)
+                maybeAlt(i, models, model)
             }
-            is VideoGenClient.SubmitResult.Ready -> updateScene(i) { it.copy(status = SceneStatus.READY, videoFile = r.file) }
+            is VideoGenClient.SubmitResult.Ready -> {
+                updateScene(i) { it.copy(status = SceneStatus.READY, videoFile = r.file) }
+                maybeAlt(i, models, model)
+            }
             is VideoGenClient.SubmitResult.Failed -> updateScene(i) { it.copy(status = SceneStatus.FAILED, error = r.msg.take(160)) }
         }
     }
@@ -429,6 +566,27 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
                 tr("السلسلة: وكيل يكتب الوصف، نموذج صورة يولّد الإطار بلا مفتاح، ونموذج فيديو يحرّكه — في Magic Hour الصورة هي الإطار الأول للمقطع، وفي Pollinations تظهر كمرجع للمشهد."),
                 style = MaterialTheme.typography.bodySmall
             )
+            // مراجع مثبّتة (10) + قفل الإطار + بدائل (11).
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FilterChip(selected = lockFrame, onClick = { lockFrame = !lockFrame }, label = { Text(tr("🔒 قفل الإطار")) })
+                FilterChip(selected = variants, onClick = { variants = !variants }, label = { Text(tr("بديل ثانٍ لكل لقطة")) })
+                OutlinedButton(onClick = { refPicker.launch("image/*") }, enabled = refs.size < 3) {
+                    Text(tr("📷 إضافة مرجع مثبّت"))
+                }
+            }
+            if (refs.isNotEmpty()) {
+                Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(tr("مراجع مثبّتة:"), style = MaterialTheme.typography.bodySmall)
+                    refs.forEachIndexed { ri, f ->
+                        Text(trf("صورة %s", ri + 1), style = MaterialTheme.typography.bodySmall)
+                        TextButton(onClick = { refs = refs.filterIndexed { j, _ -> j != ri }; f.delete() }) { Text("✕") }
+                    }
+                }
+                Text(
+                    tr("المراجع تُستخدم كإطار أول عند غياب إطار المشهد، فيبقى العنصر أو الشخصية ثابتين بين اللقطات."),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
             if (provider == "magic") {
                 Text(tr("نماذج Magic Hour المجانية (480p)"), style = MaterialTheme.typography.bodySmall)
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -455,6 +613,15 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
                         }
                     }
                 }
+            }
+            // تقدير التكلفة (11) قبل التوليد: Magic Hour 24 رصيداً لكل ثانية (480p).
+            val readyCount = scenes.count { it.visualPrompt.isNotBlank() }
+            if (readyCount > 0) {
+                Text(
+                    if (provider == "magic") trf("التكلفة التقديرية: %s رصيد Magic Hour (%s لقطة × %s ث × 24)", VideoPlanner.magicCredits(readyCount, durationSec), readyCount, durationSec)
+                    else tr("التكلفة: حسب نموذج Pollinations المختار (pollen) — راجع سعر كل نموذج أعلاه."),
+                    style = MaterialTheme.typography.bodySmall
+                )
             }
             Button(onClick = { generateAll() }, enabled = !busy && scenes.isNotEmpty(), modifier = Modifier.fillMaxWidth()) {
                 Text(tr("توليد الفيديو"))
@@ -488,6 +655,22 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
                 }
             }
         }
+        // مخطط اللقطات (7): نظرة واحدة على كل لقطة — حركتها ومدتها ونسبتها.
+        if (scenes.isNotEmpty()) {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(trf("🎬 مخطط اللقطات (%s)", scenes.size), style = MaterialTheme.typography.titleSmall)
+                        scenes.forEach { s ->
+                            Text(
+                                trf("لقطة %s • %s • %s ث • %s", s.index + 1, s.camera, if (s.shotDuration > 0) s.shotDuration else durationSec, s.aspect),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
+            }
+        }
         items(scenes, key = { it.index }) { s ->
             var sendMenu by remember(s.index) { mutableStateOf(false) }
             var sendImageMenu by remember(s.index) { mutableStateOf(false) }
@@ -497,6 +680,43 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
                     Text(s.source.take(200), style = MaterialTheme.typography.bodySmall)
                     if (s.visualPrompt.isNotBlank()) {
                         Text(s.visualPrompt, style = MaterialTheme.typography.bodySmall)
+                    }
+                    // مخطط اللقطة (7+14): حركة كاميرا + نسبة أبعاد + مدة + نموذج.
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(tr("🎥 حركة:"), style = MaterialTheme.typography.bodySmall)
+                        var camMenu by remember(s.index) { mutableStateOf(false) }
+                        Box {
+                            OutlinedButton(onClick = { camMenu = true }) { Text(s.camera) }
+                            DropdownMenu(expanded = camMenu, onDismissRequest = { camMenu = false }) {
+                                VideoPlanner.CAMERA_MOVES.forEach { mv ->
+                                    DropdownMenuItem(text = { Text(mv) }, onClick = { camMenu = false; updateScene(s.index) { it.copy(camera = mv) } })
+                                }
+                            }
+                        }
+                    }
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        VideoPlanner.ASPECTS.forEach { ar ->
+                            FilterChip(selected = s.aspect == ar, onClick = { updateScene(s.index) { it.copy(aspect = ar) } }, label = { Text(ar) })
+                        }
+                        listOf(4, 5, 8, 10).forEach { d ->
+                            FilterChip(
+                                selected = (if (s.shotDuration > 0) s.shotDuration else durationSec) == d,
+                                onClick = { updateScene(s.index) { it.copy(shotDuration = d) } },
+                                label = { Text(trf("%s ث", d)) }
+                            )
+                        }
+                    }
+                    var modelMenu by remember(s.index) { mutableStateOf(false) }
+                    Box {
+                        OutlinedButton(onClick = { modelMenu = true }) {
+                            Text(if (s.modelOverride.isBlank()) tr("نموذج اللقطة: تلقائي") else s.modelOverride)
+                        }
+                        DropdownMenu(expanded = modelMenu, onDismissRequest = { modelMenu = false }) {
+                            DropdownMenuItem(text = { Text(tr("تلقائي (بالتناوب)")) }, onClick = { modelMenu = false; updateScene(s.index) { it.copy(modelOverride = "") } })
+                            (if (provider == "magic") MagicHourClient.FREE_MODELS else videoModels.map { it.id }).forEach { m ->
+                                DropdownMenuItem(text = { Text(m) }, onClick = { modelMenu = false; updateScene(s.index) { it.copy(modelOverride = m) } })
+                            }
+                        }
                     }
                     if (s.imageFile != null) {
                         val bmp = remember(s.imageFile?.absolutePath) {
@@ -534,9 +754,20 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
                         style = MaterialTheme.typography.bodySmall
                     )
                     if (s.error.isNotBlank()) Text(s.error, style = MaterialTheme.typography.bodySmall)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (s.status == SceneStatus.READY && s.videoFile != null) {
                             OutlinedButton(onClick = { playing = s.videoFile }) { Text(tr("تشغيل")) }
+                        }
+                        if (s.altVideoFile != null) {
+                            OutlinedButton(onClick = { playing = s.altVideoFile }) { Text(trf("▶ تشغيل البديل (%s)", s.altVideoModel)) }
+                            OutlinedButton(onClick = {
+                                updateScene(s.index) {
+                                    it.copy(
+                                        videoFile = it.altVideoFile, altVideoFile = it.videoFile,
+                                        videoModel = it.altVideoModel, altVideoModel = it.videoModel
+                                    )
+                                }
+                            }) { Text(tr("✓ الاحتفاظ بالبديل")) }
                         }
                         if (s.visualPrompt.isNotBlank()) {
                             // إرسال إلى موقع فيديو: ينسخ وصف المشهد إلى الحافظة
@@ -592,6 +823,21 @@ fun VideoGenTab(vm: RelayViewModel, onOpenSite: () -> Unit = {}) {
                         if (s.visualPrompt.isNotBlank() && s.imageFile == null && s.imageStatus != "loading") {
                             OutlinedButton(onClick = { scope.launch { generateImageForScene(s.index) } }, enabled = !busy) {
                                 Text(tr("توليد صورة الإطار"))
+                            }
+                        }
+                        if (s.visualPrompt.isNotBlank()) {
+                            OutlinedButton(onClick = { enhanceScene(s.index) }, enabled = !busy) { Text(tr("✨ تحسين الوصف")) }
+                            if (s.originalPrompt.isNotBlank()) {
+                                OutlinedButton(onClick = { updateScene(s.index) { it.copy(visualPrompt = it.originalPrompt, originalPrompt = "") } }) {
+                                    Text(tr("↩ استرجاع الأصل"))
+                                }
+                            }
+                            // تمديد (14): إطار اللقطة السابقة أول إطار لهذه اللقطة.
+                            if (s.index > 0 && scenes.getOrNull(s.index - 1)?.imageFile != null) {
+                                OutlinedButton(onClick = {
+                                    val prev = scenes[s.index - 1].imageFile
+                                    updateScene(s.index) { it.copy(imageFile = prev, imageStatus = "done") }
+                                }) { Text(tr("➕ تمديد من اللقطة السابقة")) }
                             }
                         }
                         if (s.status == SceneStatus.FAILED) {

@@ -100,6 +100,8 @@ fun ModelsTab(vm: RelayViewModel, onOpenRouting: () -> Unit, onOpenKeys: () -> U
         Telemetry.stats(now - 30L * 24 * 3_600_000L).filter { it.tokens > 0 }.sortedByDescending { it.tokens }
     }
     val totalTokens = usage.sumOf { it.tokens }
+    val totalCost = usage.sumOf { it.costUsd }
+    val anyRealTokens = usage.any { it.realTokens }
     val live = vm.pool.router.stats()
     val w = Scoring.weights(vm.routeStrategy)
     val states = vm.states
@@ -124,16 +126,26 @@ fun ModelsTab(vm: RelayViewModel, onOpenRouting: () -> Unit, onOpenKeys: () -> U
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text(trf("%s جاهز • %s إجمالاً", readyCount, vm.agents.size), style = MaterialTheme.typography.bodyMedium) }
 
-        // استهلاك 30 يوماً
+        // استهلاك 30 يوماً — توكنز حقيقية من المزوّد حين يرسلها،
+        // وتكلفة بالدولار للنماذج المعروفة السعر فقط.
         item {
             SoftCard {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(tr("الاستهلاك خلال 30 يوماً"), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                        Text(trf("%s توكن تقديرياً", fmtTokens(totalTokens)), style = MaterialTheme.typography.labelMedium)
+                        Text(
+                            trf("%s توكن • $%s", fmtTokens(totalTokens), "%.2f".format(totalCost)) +
+                                if (anyRealTokens) tr(" (حقيقي)") else tr(" (تقديري)"),
+                            style = MaterialTheme.typography.labelMedium
+                        )
                     }
+                    Text(
+                        if (vm.budgetCap > 0) trf("سقف اليوم: $%s • إنفاق اليوم: $%s", "%.2f".format(vm.budgetCap), "%.2f".format(vm.spentTodayUsd()))
+                        else tr("بلا سقف إنفاق يومي — حدّده من تبويب الوكلاء."),
+                        style = MaterialTheme.typography.bodySmall
+                    )
                     if (usage.isEmpty()) {
-                        Text(tr("لا استهلاك بعد. الأرقام تقديرية من حجم النص، وتُسجَّل على هذا الجهاز فقط."), style = MaterialTheme.typography.bodySmall)
+                        Text(tr("لا استهلاك بعد. التوكنز حقيقية حين يرسلها المزوّد في رده، وإلا تُقدَّر من حجم النص، وتُسجَّل على هذا الجهاز فقط."), style = MaterialTheme.typography.bodySmall)
                     } else {
                         Row(Modifier.fillMaxWidth().height(14.dp).clip(RoundedCornerShape(7.dp))) {
                             usage.forEachIndexed { i, u ->
@@ -144,7 +156,10 @@ fun ModelsTab(vm: RelayViewModel, onOpenRouting: () -> Unit, onOpenKeys: () -> U
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 StatusDot(PALETTE[i % PALETTE.size], 8)
                                 Text(u.name, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, maxLines = 1)
-                                Text(fmtTokens(u.tokens), style = MaterialTheme.typography.labelMedium)
+                                Text(
+                                    fmtTokens(u.tokens) + if (u.costUsd > 0) " • $${"%.2f".format(u.costUsd)}" else "",
+                                    style = MaterialTheme.typography.labelMedium
+                                )
                             }
                         }
                         if (usage.size > 6) TextButton(onClick = { showAllUsage = !showAllUsage }) {

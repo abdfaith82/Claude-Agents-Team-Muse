@@ -9,7 +9,8 @@ import java.net.URL
 import java.net.URLEncoder
 
 sealed class ApiResult {
-    data class Ok(val text: String, val ms: Long = 0) : ApiResult()
+    /** usageIn/usageOut = توكنز حقيقية من حقل usage في رد المزوّد (0 إن لم يرسلها). */
+    data class Ok(val text: String, val ms: Long = 0, val usageIn: Int = 0, val usageOut: Int = 0) : ApiResult()
 
     /** fatal: مفتاح/نموذج خاطئ → عطّل الوكيل. غير ذلك مؤقت (حد معدّل/ازدحام/شبكة) → جرّب وكيلاً آخر. */
     data class Fail(
@@ -24,7 +25,7 @@ sealed class ApiResult {
 /** عميل موحّد لواجهات API الرسمية: Claude وGemini وGroq وOpenRouter وغيرها. الصور تُرسل لـ Claude وGemini فقط. */
 object ClaudeClient {
 
-    /** يرسل الطلب ويسجّل زمنه ونتيجته للوحة التحليلات. */
+    /** يرسل الطلب ويسجّل زمنه ونتيجته والتوكنز الحقيقية للوحة التحليلات. */
     suspend fun send(
         agent: AgentConfig,
         system: String,
@@ -34,9 +35,11 @@ object ClaudeClient {
     ): ApiResult {
         val t0 = System.currentTimeMillis()
         val r = sendRaw(agent, system, user, maxTokens, images)
+        val ok = r as? ApiResult.Ok
         Telemetry.record(
             agent, r is ApiResult.Ok, System.currentTimeMillis() - t0, system.length + user.length,
-            (r as? ApiResult.Ok)?.text?.length ?: 0, (r as? ApiResult.Fail)?.code ?: 200
+            ok?.text?.length ?: 0, (r as? ApiResult.Fail)?.code ?: 200,
+            ok?.usageIn ?: 0, ok?.usageOut ?: 0, agent.model
         )
         return r
     }
@@ -68,7 +71,11 @@ object ClaudeClient {
             val raw = stream?.bufferedReader()?.use { it.readText() } ?: ""
             if (code in 200..299) {
                 val text = parse(agent.provider, JSONObject(raw))
-                if (text.isBlank()) ApiResult.Fail(0, "Empty reply", fatal = false) else ApiResult.Ok(text, System.currentTimeMillis() - t0)
+                if (text.isBlank()) ApiResult.Fail(0, "Empty reply", fatal = false)
+                else {
+                    val (ui, uo) = parseUsage(agent.provider, JSONObject(raw))
+                    ApiResult.Ok(text, System.currentTimeMillis() - t0, ui, uo)
+                }
             } else {
                 val retryAfter = conn.getHeaderField("retry-after")?.trim()?.toDoubleOrNull()
                     ?.let { (it * 1000).toLong() }
@@ -242,6 +249,26 @@ object ClaudeClient {
                 )
             )
         }
+
+    /** التوكنز الحقيقية من رد المزوّد (Claude: usage، Gemini:
+     * usageMetadata، OpenAI-compat: usage) — 0 إن لم يرسلها المزوّد. */
+    private fun parseUsage(p: Provider, j: JSONObject): Pair<Int, Int> = runCatching {
+        when (p) {
+            Provider.CLAUDE -> {
+                val u = j.optJSONObject("usage") ?: return@runCatching 0 to 0
+                u.optInt("input_tokens") to u.optInt("output_tokens")
+            }
+            Provider.GEMINI -> {
+                val u = j.optJSONObject("usageMetadata") ?: return@runCatching 0 to 0
+                u.optInt("promptTokenCount") to u.optInt("candidatesTokenCount")
+            }
+            Provider.WEB, Provider.POLLINATIONS -> 0 to 0
+            else -> {
+                val u = j.optJSONObject("usage") ?: return@runCatching 0 to 0
+                u.optInt("prompt_tokens") to u.optInt("completion_tokens")
+            }
+        }
+    }.getOrDefault(0 to 0)
 
     private fun parse(p: Provider, j: JSONObject): String = when (p) {
         Provider.CLAUDE -> {
